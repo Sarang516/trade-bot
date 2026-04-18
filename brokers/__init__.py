@@ -20,12 +20,18 @@ def get_broker(settings) -> BaseBroker:
         from brokers.zerodha import ZerodhaBroker
         return ZerodhaBroker(settings)
 
-    if name == "icici":
-        from brokers.icici import ICICIBroker
-        return ICICIBroker(settings)
+    # ── ICICI Breeze (disabled — uncomment when ready to use ICICI) ──────────
+    # Steps to re-enable:
+    #   1. Uncomment the block below.
+    #   2. Uncomment ICICI credential fields in config.py.
+    #   3. Change broker Literal type in config.py to include "icici".
+    #   4. Set BROKER=icici and ICICI_* credentials in .env.
+    # if name == "icici":
+    #     from brokers.icici import ICICIBroker
+    #     return ICICIBroker(settings)
 
     raise ValueError(
-        f"Unknown broker '{name}'. Set BROKER=zerodha or BROKER=icici in .env"
+        f"Unknown broker '{name}'. Set BROKER=zerodha in .env"
     )
 
 

@@ -187,13 +187,28 @@ def main(paper: bool, symbol: str, no_dashboard: bool, log_level: str | None) ->
     from risk.risk_manager import RiskManager
     from orders.order_manager import OrderManager
     from db.trade_logger import TradeLogger
-    from notifications.telegram_bot import TelegramNotifier
+
+    # ── Telegram notifier (disabled — uncomment when ready) ───────────────────
+    # Steps to re-enable:
+    #   1. Uncomment the two lines below.
+    #   2. Remove the _NullNotifier block below them.
+    #   3. Uncomment telegram_bot_token / telegram_chat_id in config.py.
+    #   4. Set TELEGRAM_BOT_TOKEN and TELEGRAM_CHAT_ID in .env.
+    # from notifications.telegram_bot import TelegramNotifier
+    # notifier = TelegramNotifier(settings=s)
+    # ─────────────────────────────────────────────────────────────────────────
+
+    class _NullNotifier:
+        """Stub notifier — logs to console until Telegram is activated."""
+        def send(self, message: str) -> None:
+            logger.info("[Notifier] {}", message)
+
+    notifier = _NullNotifier()
 
     broker = get_broker(s)
     strategy = get_strategy(s.strategy, symbol=symbol, settings=s)
     risk_manager = RiskManager(settings=s)
     trade_logger = TradeLogger()
-    notifier = TelegramNotifier(settings=s)
     order_manager = OrderManager(
         broker=broker,
         risk_manager=risk_manager,
@@ -244,6 +259,7 @@ def main(paper: bool, symbol: str, no_dashboard: bool, log_level: str | None) ->
         _trading_loop(broker, strategy, order_manager, risk_manager)
     except Exception as exc:
         logger.critical("Fatal error in trading loop: {}", exc)
+        # ── Telegram crash alert (notifier is a stub until Telegram is enabled) ─
         try:
             notifier.send(f"BOT CRASHED: {exc}")
         except Exception:

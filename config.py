@@ -38,9 +38,11 @@ class Settings(BaseSettings):
     )
 
     # ── Broker ────────────────────────────────────────────────────────
-    broker: Literal["zerodha", "icici"] = Field(
+    # To enable ICICI later: change Literal["zerodha"] → Literal["zerodha", "icici"]
+    # and uncomment the ICICI credential fields below.
+    broker: Literal["zerodha"] = Field(
         default="zerodha",
-        description="Active broker: zerodha | icici",
+        description="Active broker: zerodha (icici support available — see comments below)",
     )
 
     # ── Zerodha Kite Connect ──────────────────────────────────────────
@@ -48,14 +50,18 @@ class Settings(BaseSettings):
     zerodha_api_secret: str = Field(default="DUMMY_ZERODHA_SECRET")
     zerodha_access_token: str = Field(default="DUMMY_ACCESS_TOKEN")
 
-    # ── ICICI Breeze ──────────────────────────────────────────────────
-    icici_api_key: str = Field(default="DUMMY_ICICI_KEY")
-    icici_api_secret: str = Field(default="DUMMY_ICICI_SECRET")
-    icici_session_token: str = Field(default="DUMMY_ICICI_SESSION")
+    # ── ICICI Breeze (disabled — uncomment all three lines when ready) ────────
+    # To activate: also uncomment the ICICI block in brokers/__init__.py
+    # and add ICICI credentials to your .env file.
+    # icici_api_key: str = Field(default="DUMMY_ICICI_KEY")
+    # icici_api_secret: str = Field(default="DUMMY_ICICI_SECRET")
+    # icici_session_token: str = Field(default="DUMMY_ICICI_SESSION")
 
-    # ── Telegram ──────────────────────────────────────────────────────
-    telegram_bot_token: str = Field(default="123456789:DUMMY_TOKEN")
-    telegram_chat_id: str = Field(default="000000000")
+    # ── Telegram (disabled — uncomment both lines when ready) ─────────────────
+    # To activate: also uncomment the TelegramNotifier block in main.py
+    # and set TELEGRAM_BOT_TOKEN / TELEGRAM_CHAT_ID in your .env file.
+    # telegram_bot_token: str = Field(default="123456789:DUMMY_TOKEN")
+    # telegram_chat_id: str = Field(default="000000000")
 
     # ── Trading Mode ──────────────────────────────────────────────────
     paper_trade: bool = Field(

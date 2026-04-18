@@ -1,6 +1,9 @@
 """
 brokers/icici.py — ICICI Direct Breeze API broker adapter.
 
+STATUS: DISABLED — fully implemented and ready, but not wired in.
+        Activate by following the steps in brokers/__init__.py comments.
+
 Implements every method in BaseBroker using the breeze-connect SDK.
 Install: pip install breeze-connect
 
