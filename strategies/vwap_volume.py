@@ -14,6 +14,7 @@ Exit logic:
 
 from __future__ import annotations
 
+import math
 from dataclasses import dataclass
 from datetime import datetime, time
 
@@ -24,7 +25,6 @@ from strategies.base_strategy import (
     BaseStrategy,
     Candle,
     ExitReason,
-    InsufficientDataError,
     Signal,
     SignalDirection,
 )
@@ -67,6 +67,9 @@ class VWAPVolumeConfig:
     # Partial booking
     partial_exit_rr: float = 1.0        # Book 50% when RR hits 1:1
 
+    # F&O strike selection
+    strike_interval: int = 50           # Nifty=50, BankNifty=100, FinNifty=50
+
     warmup_candles: int = 50            # Candles needed before trading
 
 
@@ -91,6 +94,9 @@ class VWAPVolumeStrategy(BaseStrategy):
         self._atr: float = 0.0
         self._volume_ma: float = 0.0
         self._prev_close_vs_vwap: int = 0   # +1 above, -1 below, 0 init
+        self._partial_booked: bool = False  # True once 1:1 RR partial exit fires
+        self._last_tick_price: float = 0.0  # Updated on every tick
+        self._tick_sl_breach: bool = False  # SL crossed intra-candle on a tick
 
     # ── Candle processing ─────────────────────────────────────────────
 
@@ -114,11 +120,14 @@ class VWAPVolumeStrategy(BaseStrategy):
         df["vol_ma"] = _sma(df["volume"], self.cfg.volume_ma_period)
 
         last = df.iloc[-1]
-        self._vwap = last["vwap"]
-        self._ema9 = last["ema9"]
-        self._rsi = last["rsi"]
-        self._atr = last["atr"]
-        self._volume_ma = last["vol_ma"]
+        # Only update cached value if the indicator produced a valid number.
+        # Some indicators (e.g. SMA-20 vol) are NaN for the first `period` rows
+        # even after the warmup gate passes, so preserve the last good value.
+        if not math.isnan(last["vwap"]):    self._vwap = last["vwap"]
+        if not math.isnan(last["ema9"]):    self._ema9 = last["ema9"]
+        if not math.isnan(last["rsi"]):     self._rsi = last["rsi"]
+        if not math.isnan(last["atr"]):     self._atr = last["atr"]
+        if not math.isnan(last["vol_ma"]): self._volume_ma = last["vol_ma"]
 
         # Store indicator values in state for dashboard display
         self.state.indicators = {
@@ -131,12 +140,50 @@ class VWAPVolumeStrategy(BaseStrategy):
             "volume_ratio": round(candle.volume / self._volume_ma, 2) if self._volume_ma else 0,
         }
 
+    def on_tick(self, tick: dict) -> None:
+        """
+        Called on every live price tick (high-frequency).
+        Monitors intra-candle SL breaches so the exit fires at the next
+        generate_signal() call rather than waiting for candle close.
+        Full tick-based order execution is handled by OrderManager (Phase 7).
+        """
+        ltp = float(tick.get("ltp", 0))
+        if ltp <= 0 or not self.state.in_trade:
+            self._last_tick_price = ltp
+            return
+
+        self._last_tick_price = ltp
+        sl = self.state.current_sl
+        direction = self.state.trade_direction
+
+        if direction == SignalDirection.LONG and ltp <= sl:
+            if not self._tick_sl_breach:
+                self._tick_sl_breach = True
+                logger.warning("Tick SL breach detected @ {} (SL {})", ltp, sl)
+        elif direction == SignalDirection.SHORT and ltp >= sl:
+            if not self._tick_sl_breach:
+                self._tick_sl_breach = True
+                logger.warning("Tick SL breach detected @ {} (SL {})", ltp, sl)
+
     # ── Signal generation ─────────────────────────────────────────────
+
+    def _indicators_ready(self) -> bool:
+        """Return True only when every indicator holds a valid, non-zero value."""
+        return (
+            self._vwap > 0
+            and self._atr > 0
+            and self._volume_ma > 0
+            and not math.isnan(self._rsi)
+            and not math.isnan(self._ema9)
+        )
 
     def generate_signal(self) -> Signal:
         """Evaluate conditions and return a Signal."""
         if not self.is_warmed_up():
             return self._flat_signal("Warming up")
+
+        if not self._indicators_ready():
+            return self._flat_signal("Indicators not ready")
 
         candle = self.last_candle()
         if candle is None:
@@ -151,6 +198,10 @@ class VWAPVolumeStrategy(BaseStrategy):
 
         # If in trade, check exit conditions first
         if self.state.in_trade:
+            # Honour any intra-candle SL breach flagged by on_tick()
+            if self._tick_sl_breach:
+                self._tick_sl_breach = False
+                return self._exit_signal(ExitReason.STOP_LOSS_HIT, candle.close)
             exit_signal = self._check_exit_conditions(candle)
             if exit_signal:
                 return exit_signal
@@ -191,6 +242,7 @@ class VWAPVolumeStrategy(BaseStrategy):
             confidence = self._confidence_score(
                 crossed=True, vol_surge=vol_surge, rsi_in_range=True, ema_aligned=True
             )
+            fo = self.which_strike(SignalDirection.LONG, price)
             return Signal(
                 direction=SignalDirection.LONG,
                 symbol=self.symbol,
@@ -199,10 +251,13 @@ class VWAPVolumeStrategy(BaseStrategy):
                 target=round(target, 2),
                 confidence=confidence,
                 strategy_name=self.name,
+                option_type=fo["option_type"],
+                strike_price=fo["strike_price"],
                 reason=(
                     f"VWAP crossover UP | RSI {self._rsi:.1f} | "
                     f"Vol {candle.volume:,} ({candle.volume / self._volume_ma:.1f}x avg) | "
-                    f"Price {price} > EMA9 {self._ema9:.2f}"
+                    f"Price {price} > EMA9 {self._ema9:.2f} | "
+                    f"F&O: {fo['option_type']} @ {fo['strike_price']:.0f}"
                 ),
             )
 
@@ -219,6 +274,7 @@ class VWAPVolumeStrategy(BaseStrategy):
             confidence = self._confidence_score(
                 crossed=True, vol_surge=vol_surge, rsi_in_range=True, ema_aligned=True
             )
+            fo = self.which_strike(SignalDirection.SHORT, price)
             return Signal(
                 direction=SignalDirection.SHORT,
                 symbol=self.symbol,
@@ -227,10 +283,13 @@ class VWAPVolumeStrategy(BaseStrategy):
                 target=round(target, 2),
                 confidence=confidence,
                 strategy_name=self.name,
+                option_type=fo["option_type"],
+                strike_price=fo["strike_price"],
                 reason=(
                     f"VWAP crossover DOWN | RSI {self._rsi:.1f} | "
                     f"Vol {candle.volume:,} ({candle.volume / self._volume_ma:.1f}x avg) | "
-                    f"Price {price} < EMA9 {self._ema9:.2f}"
+                    f"Price {price} < EMA9 {self._ema9:.2f} | "
+                    f"F&O: {fo['option_type']} @ {fo['strike_price']:.0f}"
                 ),
             )
 
@@ -239,8 +298,37 @@ class VWAPVolumeStrategy(BaseStrategy):
     def _check_exit_conditions(self, candle: Candle) -> Signal | None:
         price = candle.close
         direction = self.state.trade_direction
+        entry = self.state.entry_price
+        risk = abs(entry - self.state.current_sl)
+
+        # ── Partial exit at 1:1 RR — move SL to breakeven ────────────────────
+        # Actual quantity reduction (book 50%) is handled by OrderManager in
+        # Phase 7. Here we track the event and update the SL.
+        if not self._partial_booked and risk > 0:
+            partial_target = (
+                entry + self.cfg.partial_exit_rr * risk
+                if direction == SignalDirection.LONG
+                else entry - self.cfg.partial_exit_rr * risk
+            )
+            hit = (
+                (direction == SignalDirection.LONG and price >= partial_target)
+                or (direction == SignalDirection.SHORT and price <= partial_target)
+            )
+            if hit:
+                self._partial_booked = True
+                self.state.current_sl = entry  # move SL to breakeven
+                logger.info(
+                    "1:1 RR reached @ {} — SL moved to breakeven {}",
+                    price, entry,
+                )
 
         if direction == SignalDirection.LONG:
+            # Target hit — full exit
+            if self.state.current_target > 0 and price >= self.state.current_target:
+                return self._exit_signal(ExitReason.TARGET_HIT, price)
+            # SL hit
+            if price <= self.state.current_sl:
+                return self._exit_signal(ExitReason.STOP_LOSS_HIT, price)
             # VWAP cross back below → exit
             if price < self._vwap:
                 return self._exit_signal(ExitReason.SIGNAL_REVERSAL, price)
@@ -249,6 +337,12 @@ class VWAPVolumeStrategy(BaseStrategy):
                 return self._exit_signal(ExitReason.SIGNAL_REVERSAL, price)
 
         elif direction == SignalDirection.SHORT:
+            # Target hit — full exit
+            if self.state.current_target > 0 and price <= self.state.current_target:
+                return self._exit_signal(ExitReason.TARGET_HIT, price)
+            # SL hit
+            if price >= self.state.current_sl:
+                return self._exit_signal(ExitReason.STOP_LOSS_HIT, price)
             # VWAP cross back above → exit
             if price > self._vwap:
                 return self._exit_signal(ExitReason.SIGNAL_REVERSAL, price)
@@ -268,6 +362,8 @@ class VWAPVolumeStrategy(BaseStrategy):
         self.state.current_sl = signal.stop_loss
         self.state.current_target = signal.target
         self.state.last_signal = signal
+        self._partial_booked = False
+        self._tick_sl_breach = False
         logger.info(
             "Trade entered | {} {} @ {} | SL: {} | Target: {}",
             signal.direction.value, self.symbol,
@@ -283,12 +379,40 @@ class VWAPVolumeStrategy(BaseStrategy):
             direction.value if direction else "?", self.symbol,
             entry, exit_price, pnl, exit_reason.value,
         )
+        self._partial_booked = False
+        self._tick_sl_breach = False
         self.reset_state()
 
     def on_market_open(self) -> None:
         """Reset daily state at 9:15 AM."""
         self._prev_close_vs_vwap = 0
+        self._tick_sl_breach = False
         logger.info("{} strategy reset for new trading day", self.name)
+
+    def which_strike(
+        self,
+        direction: SignalDirection,
+        current_price: float,
+    ) -> dict:
+        """
+        Return the ATM strike details for F&O (options) trading.
+
+        Used when the bot trades Call/Put options instead of the index directly.
+        The Signal's option_type and strike_price fields are populated using
+        this method before the signal is emitted.
+
+        Returns
+        -------
+        dict with keys: strike_price (float), option_type ("CE" or "PE")
+
+        Example (Nifty @ 22_345, interval=50):
+            LONG  → {"strike_price": 22350.0, "option_type": "CE"}
+            SHORT → {"strike_price": 22350.0, "option_type": "PE"}
+        """
+        interval = self.cfg.strike_interval
+        atm = round(current_price / interval) * interval
+        option_type = "CE" if direction == SignalDirection.LONG else "PE"
+        return {"strike_price": float(atm), "option_type": option_type}
 
     # ── Private helpers ───────────────────────────────────────────────
 
