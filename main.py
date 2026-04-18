@@ -46,14 +46,18 @@ def _configure_logging() -> None:
     )
 
 
+_pid_lock = None  # module-level so GC never releases the lock while bot runs
+
+
 def _acquire_pid_lock() -> None:
     """Prevent duplicate bot instances using a PID file lock."""
+    global _pid_lock
     from filelock import FileLock, Timeout
 
     pid_file = Path(settings.log_dir) / "trading_bot.pid"
-    lock = FileLock(str(pid_file) + ".lock", timeout=1)
+    _pid_lock = FileLock(str(pid_file) + ".lock", timeout=1)
     try:
-        lock.acquire()
+        _pid_lock.acquire()
         pid_file.write_text(str(threading.get_ident()))
     except Timeout:
         console.print("[red]Bot is already running! Exiting.[/red]")
@@ -75,26 +79,56 @@ def _run_dashboard() -> None:
         logger.warning("Dashboard failed to start: {}", exc)
 
 
-def _trading_loop(broker, strategy, order_manager, risk_manager) -> None:
+def _warmup_strategy(broker, strategy, symbol: str, s) -> None:
+    """Load historical candles into the strategy before live trading begins."""
+    from brokers.base_broker import Exchange
+    from data.feed import HistoricalData
+
+    logger.info("Warming up strategy with historical candles...")
+    try:
+        hist = HistoricalData(broker)
+        candles = hist.warmup_candles(
+            symbol=symbol,
+            exchange=Exchange.NSE,
+            interval_minutes=s.candle_interval,
+            n_candles=strategy._warmup_candles + 50,
+        )
+        for candle in candles:
+            strategy.on_candle(candle)
+        logger.info("Warmup complete — {} candles loaded", len(candles))
+    except Exception as exc:
+        logger.warning("Warmup failed (continuing without historical data): {}", exc)
+
+
+def _trading_loop(broker, strategy, order_manager, risk_manager, symbol: str, s) -> None:
     """Main trading loop — runs during market hours."""
-    from data.feed import CandleBuilder, MarketHours
+    from data.feed import TickDataFeed, MarketHours
 
     market = MarketHours()
-    candle_builder = CandleBuilder(interval_minutes=settings.candle_interval)
+
+    feed = TickDataFeed(
+        broker=broker,
+        symbols=[symbol],
+        max_ticks=1000,
+        settings=s,
+    )
+
+    def on_candle(candle) -> None:
+        strategy.on_candle(candle)
+        signal = strategy.generate_signal()
+        if signal:
+            order_manager.process_signal(signal)
 
     def on_tick(tick: dict) -> None:
-        """Called on every live price tick."""
-        candle = candle_builder.process_tick(tick)
-        if candle:
-            # A candle just closed — run strategy
-            strategy.on_candle(candle)
-            signal = strategy.generate_signal()
-            if signal:
-                order_manager.process_signal(signal)
+        strategy.on_tick(tick)
 
-    broker.register_tick_callback(on_tick)
+    feed.subscribe_tick(on_tick)
+    feed.subscribe_candle(on_candle, interval_minutes=s.candle_interval)
+    feed.start()
 
-    logger.info("Trading loop started | Strategy: {}", settings.strategy)
+    logger.info("Trading loop started | Strategy: {} | Symbol: {}", s.strategy, symbol)
+
+    _last_market_open_day: datetime | None = None
 
     while True:
         now = datetime.now()
@@ -102,18 +136,17 @@ def _trading_loop(broker, strategy, order_manager, risk_manager) -> None:
         if not market.is_market_open(now):
             wait = market.minutes_to_open(now)
             if wait and wait > 0:
-                logger.info("Market closed. Next open in {} min", int(wait))
+                logger.info("Market closed. Next open in {:.0f} min", wait)
             time.sleep(60)
             continue
 
-        # Market is open — ensure ticks are flowing
-        if not broker.is_connected():
-            logger.warning("Broker disconnected — reconnecting...")
-            try:
-                broker.connect()
-            except Exception as exc:
-                logger.error("Reconnect failed: {}", exc)
-                time.sleep(10)
+        # Reset candle builders at market open (once per day)
+        today = now.date()
+        if _last_market_open_day != today:
+            _last_market_open_day = today
+            feed.reset_candles()
+            strategy.on_market_open()
+            logger.info("Market open — candles reset for {}", today)
 
         # Periodic reconciliation every 5 minutes
         if now.second < 5 and now.minute % 5 == 0:
@@ -124,13 +157,13 @@ def _trading_loop(broker, strategy, order_manager, risk_manager) -> None:
                 logger.error("Reconciliation error: {}", exc)
 
         # Square off check
-        if now.time() >= settings.squareoff:
+        if now.time() >= s.squareoff:
             logger.info("Square-off time reached — closing all positions")
             try:
                 order_manager.square_off_all()
+                strategy.on_market_close()
             except Exception as exc:
                 logger.error("Square-off failed: {}", exc)
-            # Wait until market close to restart loop
             time.sleep(900)
 
         time.sleep(0.5)
@@ -226,8 +259,8 @@ def main(paper: bool, symbol: str, no_dashboard: bool, log_level: str | None) ->
         console.print(f"[red]Broker connection failed: {exc}[/red]")
         sys.exit(1)
 
-    broker.subscribe_ticks([symbol])
-    logger.info("Subscribed to live ticks for {}", symbol)
+    # ── Historical warmup — pre-load candles before live trading ──────
+    _warmup_strategy(broker, strategy, symbol, s)
 
     # ── Dashboard (background thread) ─────────────────────────────────
     if not no_dashboard:
@@ -256,7 +289,7 @@ def main(paper: bool, symbol: str, no_dashboard: bool, log_level: str | None) ->
 
     # ── Start trading loop ────────────────────────────────────────────
     try:
-        _trading_loop(broker, strategy, order_manager, risk_manager)
+        _trading_loop(broker, strategy, order_manager, risk_manager, symbol, s)
     except Exception as exc:
         logger.critical("Fatal error in trading loop: {}", exc)
         # ── Telegram crash alert (notifier is a stub until Telegram is enabled) ─

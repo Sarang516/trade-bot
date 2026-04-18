@@ -46,13 +46,13 @@ trading_bot/
 ```
 
 ## Phases
-- Phase 1 (this): Project skeleton ✅
-- Phase 2: Broker API connections
-- Phase 3: Live data feed
-- Phase 4: Technical indicators
-- Phase 5: Strategy logic
-- Phase 6: Risk engine
-- Phase 7: Order engine + paper trading
+- Phase 1: Project skeleton ✅
+- Phase 2: Broker API connections ✅ (Zerodha live; ICICI ready but disabled)
+- Phase 3: Live data feed ✅ (TickDataFeed, CandleBuilder, HistoricalData, MarketHours, InstrumentLookup)
+- Phase 4: Technical indicators ✅ (VWAP, RSI, EMA, ATR built into strategy)
+- Phase 5: Strategy logic ✅ (VWAP+Volume crossover strategy)
+- Phase 6: Risk engine 🔧 (in progress)
+- Phase 7: Order engine + paper trading 🔧 (in progress)
 - Phase 8: Backtesting
-- Phase 9: Dashboard + alerts
+- Phase 9: Dashboard + alerts (Telegram ready but disabled)
 - Phase 10: Go-live checklist

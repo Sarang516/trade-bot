@@ -79,7 +79,10 @@ def main() -> None:
     login_url = f"https://kite.trade/connect/login?api_key={api_key}&v=3"
     print(f"\nStep 1 — Opening Zerodha login in your browser...")
     print(f"  URL: {login_url}")
-    webbrowser.open(login_url)
+    try:
+        webbrowser.open(login_url)
+    except Exception:
+        print("  (Could not open browser automatically — please open the URL above manually.)")
 
     print("\nStep 2 — Log in with your Zerodha credentials.")
     print("  After login, your browser will redirect to a URL like:")
@@ -89,6 +92,12 @@ def main() -> None:
     # ── Get request_token from user ────────────────────────────────
     print("\nStep 3 — Paste the full redirect URL below and press Enter:")
     redirect_url = input("  URL: ").strip()
+
+    # Detect a failed login before looking for request_token
+    if "status=failure" in redirect_url or "status=error" in redirect_url:
+        print("\n[ERROR] Zerodha login failed — the redirect URL contains status=failure.")
+        print("  → Check your Zerodha user ID and password and try again.")
+        sys.exit(1)
 
     match = re.search(r"request_token=([A-Za-z0-9]+)", redirect_url)
     if not match:
@@ -130,8 +139,18 @@ def main() -> None:
     # ── Save access_token to .env ──────────────────────────────────
     _update_env("ZERODHA_ACCESS_TOKEN", access_token)
 
-    print(f"\n  Logged in as: {user_name} ({user_id})")
-    print(f"  Access token: {access_token[:8]}{'*' * (len(access_token) - 8)}")
+    # Compute expiry: Zerodha tokens expire at 06:00 IST next morning
+    from datetime import datetime, timedelta
+    import pytz
+    ist = pytz.timezone("Asia/Kolkata")
+    now_ist = datetime.now(ist)
+    expiry = now_ist.replace(hour=6, minute=0, second=0, microsecond=0)
+    if now_ist.hour >= 6:
+        expiry += timedelta(days=1)
+
+    print(f"\n  Logged in as : {user_name} ({user_id})")
+    print(f"  Access token : {access_token[:8]}{'*' * (len(access_token) - 8)}")
+    print(f"  Token expires: {expiry.strftime('%Y-%m-%d %H:%M IST')} (run this script again tomorrow)")
     print(f"\n  Saved to: {ENV_FILE}")
     print("\n" + "=" * 60)
     print("  Done! You can now start the bot:")

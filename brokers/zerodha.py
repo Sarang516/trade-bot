@@ -86,6 +86,8 @@ class ZerodhaBroker(BaseBroker):
         self._subscribed_tokens: list[int] = []
         self._token_symbol_map: dict[int, str] = {}
         self._ws_lock = threading.Lock()
+        self._instruments_cache: dict[str, int] = {}  # "EXCHANGE:SYMBOL" -> token
+        self._last_ping: float = 0.0                  # monotonic time of last API ping
 
     # ── Connection ────────────────────────────────────────────────────
 
@@ -132,8 +134,14 @@ class ZerodhaBroker(BaseBroker):
     def is_connected(self) -> bool:
         if not self._connected or self._kite is None:
             return False
+        # Rate-limit the liveness check to once per 60 s — calling profile() on every
+        # 0.5 s trading-loop tick would exhaust Zerodha's API quota within minutes.
+        now = time.monotonic()
+        if now - self._last_ping < 60.0:
+            return self._connected
         try:
             self._kite.profile()
+            self._last_ping = now
             return True
         except Exception:  # noqa: BLE001
             self._connected = False
@@ -339,7 +347,7 @@ class ZerodhaBroker(BaseBroker):
             self._token_symbol_map[tok] = sym
         self._subscribed_tokens.extend(tokens)
 
-        def _on_ticks(ws, ticks):
+        def _on_ticks(_ws, ticks):
             for t in ticks:
                 sym = self._token_symbol_map.get(t["instrument_token"], "UNKNOWN")
                 tick = {
@@ -351,15 +359,15 @@ class ZerodhaBroker(BaseBroker):
                 }
                 self._dispatch_tick(tick)
 
-        def _on_connect(ws, response):
+        def _on_connect(ws, _response):
             ws.subscribe(tokens)
             ws.set_mode(ws.MODE_FULL, tokens)
             logger.info("WebSocket connected | Subscribed to {} tokens", len(tokens))
 
-        def _on_close(ws, code, reason):
+        def _on_close(_ws, code, reason):
             logger.warning("WebSocket closed: {} {}", code, reason)
 
-        def _on_error(ws, code, reason):
+        def _on_error(_ws, code, reason):
             logger.error("WebSocket error: {} {}", code, reason)
 
         self._ticker = KiteTicker(
@@ -384,13 +392,21 @@ class ZerodhaBroker(BaseBroker):
     # ── Instrument Lookup ─────────────────────────────────────────────
 
     def get_instrument_token(self, symbol: str, exchange: Exchange) -> int:
+        cache_key = f"{exchange.value}:{symbol}"
+        if cache_key in self._instruments_cache:
+            return self._instruments_cache[cache_key]
+
+        # Cache miss — download full instrument list once per exchange and
+        # populate cache for all symbols so subsequent calls are instant.
         ex = _EXCHANGE_MAP[exchange]
         try:
             instruments = self._kite.instruments(exchange=ex)
             for inst in instruments:
-                if inst["tradingsymbol"] == symbol:
-                    return inst["instrument_token"]
-            raise BrokerDataError(f"Symbol '{symbol}' not found on {ex}")
+                key = f"{exchange.value}:{inst['tradingsymbol']}"
+                self._instruments_cache[key] = inst["instrument_token"]
+            if cache_key not in self._instruments_cache:
+                raise BrokerDataError(f"Symbol '{symbol}' not found on {ex}")
+            return self._instruments_cache[cache_key]
         except BrokerDataError:
             raise
         except Exception as exc:

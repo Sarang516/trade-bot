@@ -17,7 +17,6 @@ from __future__ import annotations
 from dataclasses import dataclass
 from datetime import datetime, time
 
-import numpy as np
 import pandas as pd
 from loguru import logger
 
@@ -28,6 +27,13 @@ from strategies.base_strategy import (
     InsufficientDataError,
     Signal,
     SignalDirection,
+)
+from strategies.indicators import (
+    atr as _atr,
+    ema as _ema,
+    rsi as _rsi,
+    sma as _sma,
+    vwap as _vwap_calc,
 )
 
 
@@ -62,57 +68,6 @@ class VWAPVolumeConfig:
     partial_exit_rr: float = 1.0        # Book 50% when RR hits 1:1
 
     warmup_candles: int = 50            # Candles needed before trading
-
-
-# ── Indicator functions (pure numpy/pandas — no ta-lib) ───────────────────────
-
-def _ema(series: pd.Series, period: int) -> pd.Series:
-    return series.ewm(span=period, adjust=False).mean()
-
-
-def _sma(series: pd.Series, period: int) -> pd.Series:
-    return series.rolling(window=period).mean()
-
-
-def _rsi(close: pd.Series, period: int = 14) -> pd.Series:
-    """Wilder's RSI."""
-    delta = close.diff()
-    gain = delta.clip(lower=0)
-    loss = -delta.clip(upper=0)
-    avg_gain = gain.ewm(alpha=1 / period, adjust=False).mean()
-    avg_loss = loss.ewm(alpha=1 / period, adjust=False).mean()
-    rs = avg_gain / avg_loss.replace(0, np.nan)
-    return 100 - (100 / (1 + rs))
-
-
-def _atr(df: pd.DataFrame, period: int = 14) -> pd.Series:
-    """Average True Range (Wilder's smoothing)."""
-    high, low, prev_close = df["high"], df["low"], df["close"].shift(1)
-    tr = pd.concat(
-        [high - low, (high - prev_close).abs(), (low - prev_close).abs()], axis=1
-    ).max(axis=1)
-    return tr.ewm(alpha=1 / period, adjust=False).mean()
-
-
-def _vwap(df: pd.DataFrame) -> pd.Series:
-    """
-    VWAP that resets at market open each day.
-    Requires a datetime index (or 'datetime' column).
-    """
-    if "datetime" not in df.columns and not isinstance(df.index, pd.DatetimeIndex):
-        raise ValueError("DataFrame must have a datetime index or 'datetime' column")
-
-    idx = df.index if isinstance(df.index, pd.DatetimeIndex) else pd.to_datetime(df["datetime"])
-    tp = (df["high"] + df["low"] + df["close"]) / 3
-    tp_x_vol = tp * df["volume"]
-
-    vwap_values = []
-    for date, group in tp_x_vol.groupby(idx.date):
-        vol_group = df["volume"].loc[group.index]
-        vwap_group = tp_x_vol.loc[group.index].cumsum() / vol_group.cumsum()
-        vwap_values.append(vwap_group)
-
-    return pd.concat(vwap_values).reindex(df.index)
 
 
 # ── Strategy ──────────────────────────────────────────────────────────────────
@@ -152,7 +107,7 @@ class VWAPVolumeStrategy(BaseStrategy):
         df = self._df.copy()
 
         # Compute indicators
-        df["vwap"] = _vwap(df)
+        df["vwap"], _, _ = _vwap_calc(df)
         df["ema9"] = _ema(df["close"], self.cfg.ema_period)
         df["rsi"] = _rsi(df["close"], self.cfg.rsi_period)
         df["atr"] = _atr(df, self.cfg.atr_period)
