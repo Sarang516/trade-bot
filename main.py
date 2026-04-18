@@ -248,6 +248,7 @@ def main(paper: bool, symbol: str, no_dashboard: bool, log_level: str | None) ->
         trade_logger=trade_logger,
         notifier=notifier,
         settings=s,
+        strategy=strategy,
     )
 
     # ── Connect broker ────────────────────────────────────────────────
