@@ -100,7 +100,8 @@ def _warmup_strategy(broker, strategy, symbol: str, s) -> None:
         logger.warning("Warmup failed (continuing without historical data): {}", exc)
 
 
-def _trading_loop(broker, strategy, order_manager, risk_manager, symbol: str, s) -> None:
+def _trading_loop(broker, strategy, order_manager, risk_manager, symbol: str, s,
+                  bot_status: dict, trade_logger=None, notifier=None) -> None:
     """Main trading loop — runs during market hours."""
     from data.feed import TickDataFeed, MarketHours
 
@@ -114,15 +115,21 @@ def _trading_loop(broker, strategy, order_manager, risk_manager, symbol: str, s)
     )
 
     def on_candle(candle) -> None:
-        strategy.on_candle(candle)
-        if _bot_status.get("status") == "PAUSED":
-            return
-        signal = strategy.generate_signal()
-        if signal:
-            order_manager.process_signal(signal)
+        try:
+            strategy.on_candle(candle)
+            if bot_status.get("status") == "PAUSED":
+                return
+            signal = strategy.generate_signal()
+            if signal:
+                order_manager.process_signal(signal)
+        except Exception as exc:
+            logger.error("on_candle error (candle skipped): {}", exc)
 
     def on_tick(tick: dict) -> None:
-        strategy.on_tick(tick)
+        try:
+            strategy.on_tick(tick)
+        except Exception as exc:
+            logger.warning("on_tick error: {}", exc)
 
     feed.subscribe_tick(on_tick)
     feed.subscribe_candle(on_candle, interval_minutes=s.candle_interval)
@@ -164,13 +171,13 @@ def _trading_loop(broker, strategy, order_manager, risk_manager, symbol: str, s)
             try:
                 order_manager.square_off_all()
                 strategy.on_market_close()
-                # EOD: persist daily summary and send Telegram report
-                try:
-                    trade_logger.compute_daily_summary()
-                    summary = trade_logger.get_today_summary()
-                    notifier.notify_daily_summary(summary)
-                except Exception:
-                    pass
+                if trade_logger and notifier:
+                    try:
+                        trade_logger.compute_daily_summary()
+                        summary = trade_logger.get_today_summary()
+                        notifier.notify_daily_summary(summary)
+                    except Exception:
+                        pass
             except Exception as exc:
                 logger.error("Square-off failed: {}", exc)
             time.sleep(900)
@@ -320,7 +327,8 @@ def main(paper: bool, symbol: str, no_dashboard: bool, log_level: str | None) ->
 
     # ── Start trading loop ────────────────────────────────────────────
     try:
-        _trading_loop(broker, strategy, order_manager, risk_manager, symbol, s)
+        _trading_loop(broker, strategy, order_manager, risk_manager, symbol, s,
+                      bot_status=_bot_status, trade_logger=trade_logger, notifier=notifier)
     except Exception as exc:
         logger.critical("Fatal error in trading loop: {}", exc)
         # ── Telegram crash alert (notifier is a stub until Telegram is enabled) ─
