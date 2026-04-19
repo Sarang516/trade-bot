@@ -98,7 +98,45 @@ class VWAPVolumeStrategy(BaseStrategy):
         self._last_tick_price: float = 0.0  # Updated on every tick
         self._tick_sl_breach: bool = False  # SL crossed intra-candle on a tick
 
+        # Backtest fast-path: pre-computed indicators keyed by candle datetime.
+        # Populated by precompute_indicators(); on_candle() uses it to skip
+        # recomputing indicators on every bar (O(n²) → O(n) per backtest).
+        self._precomputed: dict = {}
+
     # ── Candle processing ─────────────────────────────────────────────
+
+    def add_candle(self, candle: Candle) -> None:
+        """
+        Override base: when pre-computed indicators are loaded (backtest),
+        just append to history without rebuilding the whole DataFrame —
+        the fast path in on_candle() does not read self._df at all.
+        This eliminates the O(n²) rebuild cost over long backtests.
+        """
+        if self._precomputed:
+            self._candle_history.append(candle)
+        else:
+            super().add_candle(candle)
+
+    def precompute_indicators(self, full_df: pd.DataFrame) -> None:
+        """
+        Backtest fast-path: compute every indicator once on the full DataFrame
+        and cache the per-bar results keyed by candle datetime. Called by the
+        backtest engine before the candle loop — on_candle() then just reads
+        the cached row instead of recomputing all five indicators each bar.
+        """
+        df = full_df.copy()
+        df["vwap"], _, _ = _vwap_calc(df)
+        df["ema9"]   = _ema(df["close"], self.cfg.ema_period)
+        df["rsi"]    = _rsi(df["close"], self.cfg.rsi_period)
+        df["atr"]    = _atr(df, self.cfg.atr_period)
+        df["vol_ma"] = _sma(df["volume"], self.cfg.volume_ma_period)
+
+        cols = ["vwap", "ema9", "rsi", "atr", "vol_ma"]
+        self._precomputed = {
+            ts.to_pydatetime() if hasattr(ts, "to_pydatetime") else ts:
+                tuple(row[c] for c in cols)
+            for ts, row in df[cols].iterrows()
+        }
 
     def on_candle(self, candle: Candle) -> None:
         """Update indicators on every completed candle."""
@@ -110,24 +148,31 @@ class VWAPVolumeStrategy(BaseStrategy):
         if not self.is_warmed_up():
             return
 
-        df = self._df.copy()
-
-        # Compute indicators
-        df["vwap"], _, _ = _vwap_calc(df)
-        df["ema9"] = _ema(df["close"], self.cfg.ema_period)
-        df["rsi"] = _rsi(df["close"], self.cfg.rsi_period)
-        df["atr"] = _atr(df, self.cfg.atr_period)
-        df["vol_ma"] = _sma(df["volume"], self.cfg.volume_ma_period)
-
-        last = df.iloc[-1]
-        # Only update cached value if the indicator produced a valid number.
-        # Some indicators (e.g. SMA-20 vol) are NaN for the first `period` rows
-        # even after the warmup gate passes, so preserve the last good value.
-        if not math.isnan(last["vwap"]):    self._vwap = last["vwap"]
-        if not math.isnan(last["ema9"]):    self._ema9 = last["ema9"]
-        if not math.isnan(last["rsi"]):     self._rsi = last["rsi"]
-        if not math.isnan(last["atr"]):     self._atr = last["atr"]
-        if not math.isnan(last["vol_ma"]): self._volume_ma = last["vol_ma"]
+        # ── Fast path (backtest): read pre-computed values ────────────────
+        cached = self._precomputed.get(candle.datetime)
+        if cached is not None:
+            v, e, r, a, vm = cached
+            if not math.isnan(v):  self._vwap      = v
+            if not math.isnan(e):  self._ema9      = e
+            if not math.isnan(r):  self._rsi       = r
+            if not math.isnan(a):  self._atr       = a
+            if not math.isnan(vm): self._volume_ma = vm
+        else:
+            # ── Live path: recompute on the recent slice ──────────────────
+            # Cap to last 200 candles — sufficient for all indicators (VWAP ≤75 bars/day,
+            # RSI/ATR/EMA/SMA all ≤50) and avoids O(n²) growth.
+            df = self._df.iloc[-200:].copy()
+            df["vwap"], _, _ = _vwap_calc(df)
+            df["ema9"]   = _ema(df["close"], self.cfg.ema_period)
+            df["rsi"]    = _rsi(df["close"], self.cfg.rsi_period)
+            df["atr"]    = _atr(df, self.cfg.atr_period)
+            df["vol_ma"] = _sma(df["volume"], self.cfg.volume_ma_period)
+            last = df.iloc[-1]
+            if not math.isnan(last["vwap"]):   self._vwap      = last["vwap"]
+            if not math.isnan(last["ema9"]):   self._ema9      = last["ema9"]
+            if not math.isnan(last["rsi"]):    self._rsi       = last["rsi"]
+            if not math.isnan(last["atr"]):    self._atr       = last["atr"]
+            if not math.isnan(last["vol_ma"]): self._volume_ma = last["vol_ma"]
 
         # Store indicator values in state for dashboard display
         self.state.indicators = {

@@ -12,6 +12,7 @@ numpy==2.2.6
 pandas==2.3.2
 pandas-ta==0.4.71b0         # Technical indicators (pure pandas/numpy)
 pytz==2024.1
+matplotlib==3.9.0            # Equity curve and drawdown charts (backtest)
 
 # ── HTTP & WebSockets ─────────────────────────────────────────────────
 requests==2.32.3

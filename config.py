@@ -81,6 +81,11 @@ class Settings(BaseSettings):
     # ── Strategy ──────────────────────────────────────────────────────
     strategy: str = Field(default="vwap_volume")
     candle_interval: Literal[1, 3, 5, 15, 30, 60] = Field(default=5)
+
+    @field_validator("candle_interval", mode="before")
+    @classmethod
+    def _coerce_interval(cls, v):
+        return int(v)
     trade_start_time: str = Field(default="09:20")
     trade_end_time: str = Field(default="14:30")
     squareoff_time: str = Field(default="15:15")

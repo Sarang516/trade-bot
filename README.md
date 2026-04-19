@@ -53,6 +53,6 @@ trading_bot/
 - Phase 5: Strategy logic ✅ (VWAP+Volume crossover strategy)
 - Phase 6: Risk engine ✅ (stop loss, trailing SL, position sizing, daily limits)
 - Phase 7: Order engine + paper trading ✅ (entry/exit orders, SL bracket, partial booking, reconciliation)
-- Phase 8: Backtesting ✅ (BacktestEngine, trade log, performance metrics, CSV export)
+- Phase 8: Backtesting ✅ (BacktestEngine, trade log, performance metrics, CSV export, grid optimizer, overfitting detection, charts)
 - Phase 9: Dashboard + alerts (Telegram ready but disabled)
 - Phase 10: Go-live checklist
