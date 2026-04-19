@@ -115,6 +115,8 @@ def _trading_loop(broker, strategy, order_manager, risk_manager, symbol: str, s)
 
     def on_candle(candle) -> None:
         strategy.on_candle(candle)
+        if _bot_status.get("status") == "PAUSED":
+            return
         signal = strategy.generate_signal()
         if signal:
             order_manager.process_signal(signal)
@@ -162,6 +164,13 @@ def _trading_loop(broker, strategy, order_manager, risk_manager, symbol: str, s)
             try:
                 order_manager.square_off_all()
                 strategy.on_market_close()
+                # EOD: persist daily summary and send Telegram report
+                try:
+                    trade_logger.compute_daily_summary()
+                    summary = trade_logger.get_today_summary()
+                    notifier.notify_daily_summary(summary)
+                except Exception:
+                    pass
             except Exception as exc:
                 logger.error("Square-off failed: {}", exc)
             time.sleep(900)
@@ -221,22 +230,15 @@ def main(paper: bool, symbol: str, no_dashboard: bool, log_level: str | None) ->
     from orders.order_manager import OrderManager
     from db.trade_logger import TradeLogger
 
-    # ── Telegram notifier (disabled — uncomment when ready) ───────────────────
-    # Steps to re-enable:
-    #   1. Uncomment the two lines below.
-    #   2. Remove the _NullNotifier block below them.
-    #   3. Uncomment telegram_bot_token / telegram_chat_id in config.py.
-    #   4. Set TELEGRAM_BOT_TOKEN and TELEGRAM_CHAT_ID in .env.
-    # from notifications.telegram_bot import TelegramNotifier
-    # notifier = TelegramNotifier(settings=s)
-    # ─────────────────────────────────────────────────────────────────────────
-
-    class _NullNotifier:
-        """Stub notifier — logs to console until Telegram is activated."""
-        def send(self, message: str) -> None:
-            logger.info("[Notifier] {}", message)
-
-    notifier = _NullNotifier()
+    # ── Telegram notifier ────────────────────────────────────────────────────
+    # Active when TELEGRAM_BOT_TOKEN / TELEGRAM_CHAT_ID are set in .env.
+    # Falls back to console logging when tokens are DUMMY values.
+    from notifications.telegram_bot import TelegramNotifier
+    _tg_active = (
+        s.telegram_bot_token not in ("DUMMY_TELEGRAM_TOKEN", "")
+        and s.telegram_chat_id not in ("000000000", "")
+    )
+    notifier = TelegramNotifier(settings=s)
 
     broker = get_broker(s)
     strategy = get_strategy(s.strategy, symbol=symbol, settings=s)
@@ -250,6 +252,34 @@ def main(paper: bool, symbol: str, no_dashboard: bool, log_level: str | None) ->
         settings=s,
         strategy=strategy,
     )
+
+    # ── Shared bot state (dashboard + Telegram both read/write this) ──────────
+    _bot_status = {"status": "RUNNING"}
+
+    # Wire context into dashboard
+    from dashboard.app import set_context as _dash_set
+    _dash_set(
+        order_manager=order_manager,
+        risk_manager=risk_manager,
+        strategy=strategy,
+        trade_logger=trade_logger,
+        symbol=symbol,
+        bot_status=_bot_status,
+    )
+
+    # Wire context into Telegram bot and start it
+    notifier.set_context(
+        order_manager=order_manager,
+        risk_manager=risk_manager,
+        trade_logger=trade_logger,
+        bot_status=_bot_status,
+    )
+    if _tg_active:
+        notifier.start()
+        logger.info("Telegram bot started")
+        trade_logger.log_bot_event("INFO", "Telegram bot started")
+    else:
+        logger.info("Telegram disabled — set TELEGRAM_BOT_TOKEN in .env to enable")
 
     # ── Connect broker ────────────────────────────────────────────────
     logger.info("Connecting to {} broker...", s.broker)
@@ -295,7 +325,7 @@ def main(paper: bool, symbol: str, no_dashboard: bool, log_level: str | None) ->
         logger.critical("Fatal error in trading loop: {}", exc)
         # ── Telegram crash alert (notifier is a stub until Telegram is enabled) ─
         try:
-            notifier.send(f"BOT CRASHED: {exc}")
+            notifier.notify_error(f"BOT CRASHED: {exc}")
         except Exception:
             pass
         raise

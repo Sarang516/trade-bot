@@ -57,11 +57,11 @@ class Settings(BaseSettings):
     # icici_api_secret: str = Field(default="DUMMY_ICICI_SECRET")
     # icici_session_token: str = Field(default="DUMMY_ICICI_SESSION")
 
-    # ── Telegram (disabled — uncomment both lines when ready) ─────────────────
-    # To activate: also uncomment the TelegramNotifier block in main.py
-    # and set TELEGRAM_BOT_TOKEN / TELEGRAM_CHAT_ID in your .env file.
-    # telegram_bot_token: str = Field(default="123456789:DUMMY_TOKEN")
-    # telegram_chat_id: str = Field(default="000000000")
+    # ── Telegram ──────────────────────────────────────────────────────────────
+    # Set TELEGRAM_BOT_TOKEN and TELEGRAM_CHAT_ID in your .env file.
+    # Leave as DUMMY values to disable — bot will log alerts to console instead.
+    telegram_bot_token: str = Field(default="DUMMY_TELEGRAM_TOKEN")
+    telegram_chat_id:   str = Field(default="000000000")
 
     # ── Trading Mode ──────────────────────────────────────────────────
     paper_trade: bool = Field(
