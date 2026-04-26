@@ -1,5 +1,5 @@
 """
-backtest/engine.py — Event-driven backtesting engine.
+backtest/engine.py - Event-driven backtesting engine.
 
 Uses the SAME Strategy + RiskManager interfaces as live trading.
 Replays historical OHLCV candles, simulates fills, and produces
@@ -7,10 +7,10 @@ a BacktestResult with full trade log and performance metrics.
 
 Fill model
 ----------
-  Entry  : NEXT candle's open ± slippage  (no lookahead bias)
-  SL hit : exact SL price  (candle.low ≤ SL for LONG)
-  Target : exact target price  (candle.high ≥ target for LONG)
-  Exit   : signal candle close ± slippage
+  Entry  : NEXT candle's open +/- slippage  (no lookahead bias)
+  SL hit : exact SL price  (candle.low <= SL for LONG)
+  Target : exact target price  (candle.high >= target for LONG)
+  Exit   : signal candle close +/- slippage
 
 Intra-candle priority
 ---------------------
@@ -51,9 +51,9 @@ _INDIA_RF_ANNUAL = 0.065
 _INDIA_RF_DAILY = _INDIA_RF_ANNUAL / 252
 
 
-# ═════════════════════════════════════════════════════════════════════════════
+# =============================================================================
 # BacktestTrade
-# ═════════════════════════════════════════════════════════════════════════════
+# =============================================================================
 
 @dataclass
 class BacktestTrade:
@@ -99,13 +99,13 @@ class BacktestTrade:
         }
 
 
-# ═════════════════════════════════════════════════════════════════════════════
+# =============================================================================
 # BacktestResult
-# ═════════════════════════════════════════════════════════════════════════════
+# =============================================================================
 
 @dataclass
 class BacktestResult:
-    """Complete backtest output — trade log + performance metrics."""
+    """Complete backtest output - trade log + performance metrics."""
 
     symbol: str
     strategy_name: str
@@ -119,7 +119,7 @@ class BacktestResult:
     # Per-candle equity curve: [{datetime, equity, drawdown}]
     equity_curve: list[dict] = field(default_factory=list)
 
-    # ── Computed on __post_init__ ──────────────────────────────────────
+    # -- Computed on __post_init__ --------------------------------------
     total_trades: int = 0
     winning_trades: int = 0
     losing_trades: int = 0
@@ -146,12 +146,12 @@ class BacktestResult:
     sharpe_ratio_rf: float = 0.0    # with India Rf = 6.5%
     max_consecutive_wins: int = 0
     max_consecutive_losses: int = 0
-    monthly_pnl: dict = field(default_factory=dict)   # "YYYY-MM" → float
+    monthly_pnl: dict = field(default_factory=dict)   # "YYYY-MM" -> float
 
     def __post_init__(self) -> None:
         self._compute_metrics()
 
-    # ── Metrics ────────────────────────────────────────────────────────
+    # -- Metrics --------------------------------------------------------
 
     def _compute_metrics(self) -> None:
         if not self.trades:
@@ -270,18 +270,18 @@ class BacktestResult:
         self.max_consecutive_wins   = max_cw
         self.max_consecutive_losses = max_cl
 
-    # ── Console output ─────────────────────────────────────────────────
+    # -- Console output -------------------------------------------------
 
     def print_summary(self) -> None:
         """Print formatted performance report to console."""
-        sep = "═" * 58
+        sep = "=" * 58
         print(f"\n{sep}")
-        print(f"  BACKTEST RESULTS — {self.strategy_name} | {self.symbol}")
+        print(f"  BACKTEST RESULTS - {self.strategy_name} | {self.symbol}")
         print(sep)
-        print(f"  Period           : {self.from_date.date()} → {self.to_date.date()}")
+        print(f"  Period           : {self.from_date.date()} to {self.to_date.date()}")
         print(f"  Interval         : {self.interval_minutes}-min candles")
         print(f"  Candles tested   : {self.candles_tested:,}")
-        print(f"  Initial capital  : ₹{self.initial_capital:,.0f}")
+        print(f"  Initial capital  : Rs.{self.initial_capital:,.0f}")
         print(sep)
         print(f"  Total trades     : {self.total_trades}")
         print(f"  Winners / Losers : {self.winning_trades} / {self.losing_trades}")
@@ -290,29 +290,29 @@ class BacktestResult:
         print(sep)
         sign = "+" if self.net_pnl >= 0 else ""
         ret  = self.net_pnl / self.initial_capital * 100 if self.initial_capital else 0
-        print(f"  Net P&L          : ₹{sign}{self.net_pnl:,.2f}  ({ret:+.2f}%)")
+        print(f"  Net P&L          : Rs.{sign}{self.net_pnl:,.2f}  ({ret:+.2f}%)")
         print(f"  CAGR             : {self.cagr_pct:+.2f}%")
-        print(f"  Gross profit     : ₹{self.gross_profit:,.2f}")
-        print(f"  Gross loss       : ₹{self.gross_loss:,.2f}")
+        print(f"  Gross profit     : Rs.{self.gross_profit:,.2f}")
+        print(f"  Gross loss       : Rs.{self.gross_loss:,.2f}")
         print(f"  Profit factor    : {self.profit_factor}")
         print(sep)
-        print(f"  Max drawdown     : ₹{self.max_drawdown_inr:,.2f}  ({self.max_drawdown_pct}%)")
+        print(f"  Max drawdown     : Rs.{self.max_drawdown_inr:,.2f}  ({self.max_drawdown_pct}%)")
         print(f"  Max DD duration  : {self.max_drawdown_days} days")
         print(f"  Sharpe (no Rf)   : {self.sharpe_ratio}")
         print(f"  Sharpe (Rf 6.5%) : {self.sharpe_ratio_rf}")
         print(sep)
-        print(f"  Avg win          : ₹{self.avg_win:,.2f}")
-        print(f"  Avg loss         : ₹{self.avg_loss:,.2f}")
+        print(f"  Avg win          : Rs.{self.avg_win:,.2f}")
+        print(f"  Avg loss         : Rs.{self.avg_loss:,.2f}")
         print(f"  Avg R-multiple   : {self.avg_r_multiple}R")
-        print(f"  Best trade       : ₹{self.best_trade_pnl:,.2f}")
-        print(f"  Worst trade      : ₹{self.worst_trade_pnl:,.2f}")
+        print(f"  Best trade       : Rs.{self.best_trade_pnl:,.2f}")
+        print(f"  Worst trade      : Rs.{self.worst_trade_pnl:,.2f}")
         print(f"  Avg duration     : {self.avg_duration_minutes:.0f} min")
         print(sep)
-        print(f"  Best day         : ₹{self.best_day_pnl:,.2f}")
-        print(f"  Worst day        : ₹{self.worst_day_pnl:,.2f}")
+        print(f"  Best day         : Rs.{self.best_day_pnl:,.2f}")
+        print(f"  Worst day        : Rs.{self.worst_day_pnl:,.2f}")
         print(f"  Max consec wins  : {self.max_consecutive_wins}")
         print(f"  Max consec loss  : {self.max_consecutive_losses}")
-        print(f"  Total commission : ₹{self.total_commission:,.2f}")
+        print(f"  Total commission : Rs.{self.total_commission:,.2f}")
         print(sep)
         if self.monthly_pnl:
             self.monthly_table()
@@ -322,27 +322,26 @@ class BacktestResult:
         if not self.monthly_pnl:
             return
 
-        # Count trades per month
         month_trades: dict[str, int] = defaultdict(int)
         for t in self.trades:
             month_trades[t.exit_time.strftime("%Y-%m")] += 1
 
-        print(f"\n  {'Month':<10}  {'P&L':>12}  {'Trades':>7}  {'Result'}")
+        print(f"\n  {'Month':<10}  {'P&L':>12}  {'Trades':>7}  Result")
         print(f"  {'-'*10}  {'-'*12}  {'-'*7}  {'-'*6}")
         for month, pnl in sorted(self.monthly_pnl.items()):
             sign   = "+" if pnl >= 0 else ""
-            result = "✅" if pnl >= 0 else "❌"
+            result = "WIN" if pnl >= 0 else "LOSS"
             n      = month_trades.get(month, 0)
-            print(f"  {month:<10}  ₹{sign}{pnl:>10,.2f}  {n:>7}  {result}")
+            print(f"  {month:<10}  Rs.{sign}{pnl:>10,.2f}  {n:>7}  {result}")
 
         total = sum(self.monthly_pnl.values())
         pos   = sum(1 for v in self.monthly_pnl.values() if v >= 0)
         neg   = len(self.monthly_pnl) - pos
-        print(f"  {'─'*10}  {'─'*12}  {'─'*7}")
-        print(f"  {'TOTAL':<10}  ₹{total:>+10,.2f}  {pos} up / {neg} down")
+        print(f"  {'-'*10}  {'-'*12}  {'-'*7}")
+        print(f"  {'TOTAL':<10}  Rs.{total:>+10,.2f}  {pos} up / {neg} down")
         print()
 
-    # ── Chart generation ───────────────────────────────────────────────
+    # -- Chart generation -----------------------------------------------
 
     def plot_charts(self, output_dir: str = ".") -> Optional[str]:
         """
@@ -356,7 +355,7 @@ class BacktestResult:
             import matplotlib.dates as mdates
         except ImportError:
             logger.warning(
-                "matplotlib not installed — skipping charts. "
+                "matplotlib not installed - skipping charts. "
                 "Run: pip install matplotlib"
             )
             return None
@@ -371,12 +370,12 @@ class BacktestResult:
 
         fig, (ax1, ax2) = plt.subplots(2, 1, figsize=(14, 9), sharex=True)
         fig.suptitle(
-            f"Backtest — {self.strategy_name} | {self.symbol}  "
-            f"({self.from_date.date()} → {self.to_date.date()})",
+            f"Backtest - {self.strategy_name} | {self.symbol}  "
+            f"({self.from_date.date()} -> {self.to_date.date()})",
             fontsize=12,
         )
 
-        # ── Equity curve ───────────────────────────────────────────────
+        # -- Equity curve -----------------------------------------------
         ax1.plot(dates, equities, color="#1976D2", linewidth=1.2, label="Equity")
         ax1.axhline(
             y=self.initial_capital, color="gray",
@@ -392,32 +391,32 @@ class BacktestResult:
             where=[e < self.initial_capital for e in equities],
             alpha=0.15, color="red",
         )
-        ax1.set_ylabel("Portfolio Value (₹)")
+        ax1.set_ylabel("Portfolio Value (Rs.)")
         ax1.set_title(
-            f"Net P&L ₹{self.net_pnl:+,.0f}  |  CAGR {self.cagr_pct:+.1f}%  |  "
+            f"Net P&L Rs.{self.net_pnl:+,.0f}  |  CAGR {self.cagr_pct:+.1f}%  |  "
             f"Sharpe(Rf) {self.sharpe_ratio_rf}",
             fontsize=10,
         )
         ax1.grid(True, alpha=0.3)
         ax1.legend(fontsize=9)
         ax1.yaxis.set_major_formatter(
-            plt.FuncFormatter(lambda x, _: f"₹{x:,.0f}")
+            plt.FuncFormatter(lambda x, _: f"Rs.{x:,.0f}")
         )
 
-        # ── Drawdown ───────────────────────────────────────────────────
+        # -- Drawdown ---------------------------------------------------
         dd_neg = [-d for d in drawdowns]
         ax2.fill_between(dates, 0, dd_neg, color="#D32F2F", alpha=0.5, label="Drawdown")
         ax2.plot(dates, dd_neg, color="#D32F2F", linewidth=0.6)
-        ax2.set_ylabel("Drawdown (₹)")
+        ax2.set_ylabel("Drawdown (Rs.)")
         ax2.set_title(
-            f"Max Drawdown ₹{self.max_drawdown_inr:,.0f}  ({self.max_drawdown_pct}%)  "
+            f"Max Drawdown Rs.{self.max_drawdown_inr:,.0f}  ({self.max_drawdown_pct}%)  "
             f"| Duration {self.max_drawdown_days} days",
             fontsize=10,
         )
         ax2.grid(True, alpha=0.3)
         ax2.legend(fontsize=9)
         ax2.yaxis.set_major_formatter(
-            plt.FuncFormatter(lambda x, _: f"₹{x:,.0f}")
+            plt.FuncFormatter(lambda x, _: f"Rs.{x:,.0f}")
         )
 
         ax2.xaxis.set_major_formatter(mdates.DateFormatter("%Y-%m"))
@@ -428,10 +427,10 @@ class BacktestResult:
         out_path.parent.mkdir(parents=True, exist_ok=True)
         plt.savefig(out_path, dpi=150, bbox_inches="tight")
         plt.close()
-        logger.info("Chart saved → {}", out_path)
+        logger.info("Chart saved -> {}", out_path)
         return str(out_path)
 
-    # ── Export ─────────────────────────────────────────────────────────
+    # -- Export ---------------------------------------------------------
 
     def to_csv(self, path: str | Path) -> None:
         """Export trade-by-trade log to CSV."""
@@ -443,7 +442,7 @@ class BacktestResult:
             writer = csv.DictWriter(f, fieldnames=self.trades[0].to_dict().keys())
             writer.writeheader()
             writer.writerows(t.to_dict() for t in self.trades)
-        logger.info("Trade log → {}", path)
+        logger.info("Trade log -> {}", path)
 
     def to_equity_csv(self, path: str | Path) -> None:
         """Export per-candle equity curve to CSV."""
@@ -454,12 +453,12 @@ class BacktestResult:
             writer = csv.DictWriter(f, fieldnames=["datetime", "equity", "drawdown"])
             writer.writeheader()
             writer.writerows(self.equity_curve)
-        logger.info("Equity curve → {}", path)
+        logger.info("Equity curve -> {}", path)
 
 
-# ═════════════════════════════════════════════════════════════════════════════
+# =============================================================================
 # BacktestEngine
-# ═════════════════════════════════════════════════════════════════════════════
+# =============================================================================
 
 class BacktestEngine:
     """
@@ -473,9 +472,9 @@ class BacktestEngine:
     strategy_name    : registered key, e.g. "vwap_volume"
     symbol           : underlying symbol, e.g. "NIFTY"
     settings         : Settings object from config.py
-    commission_inr   : flat round-trip commission per trade (₹20 entry + ₹20 exit = ₹40)
+    commission_inr   : flat round-trip commission per trade (Rs.20 entry + Rs.20 exit = Rs.40)
     slippage_pct     : one-way slippage fraction (0.0005 = 0.05%)
-    next_candle_fill : True → fill at next candle open (no lookahead bias) [recommended]
+    next_candle_fill : True -> fill at next candle open (no lookahead bias) [recommended]
     strategy_config  : dict of VWAPVolumeConfig attribute overrides (used by optimizer)
     """
 
@@ -497,7 +496,7 @@ class BacktestEngine:
         self._next_fill     = next_candle_fill
         self._cfg_overrides = strategy_config or {}
 
-    # ── Public entry points ────────────────────────────────────────────
+    # -- Public entry points --------------------------------------------
 
     def run_from_broker(
         self,
@@ -520,7 +519,7 @@ class BacktestEngine:
         )
         if df.empty:
             raise ValueError(
-                f"No data for {self._symbol} {from_date} → {to_date}"
+                f"No data for {self._symbol} {from_date} -> {to_date}"
             )
         return self.run_from_dataframe(df, interval_minutes)
 
@@ -573,7 +572,7 @@ class BacktestEngine:
             raise ValueError("DataFrame produced zero candles")
         return self._run(candles, interval_minutes, full_df=df)
 
-    # ── Core simulation loop ───────────────────────────────────────────
+    # -- Core simulation loop -------------------------------------------
 
     def _run(
         self,
@@ -593,8 +592,8 @@ class BacktestEngine:
                 if hasattr(strategy.cfg, key):
                     setattr(strategy.cfg, key, val)
 
-        # Precompute indicators once over full history — massive speedup
-        # for long backtests and grid optimization (O(n²) → O(n)).
+        # Precompute indicators once over full history - massive speedup
+        # for long backtests and grid optimization (O(n²) -> O(n)).
         if full_df is not None and hasattr(strategy, "precompute_indicators"):
             strategy.precompute_indicators(full_df)
 
@@ -618,13 +617,13 @@ class BacktestEngine:
         for candle in candles:
             exited_this = False
 
-            # ── 0. Reset daily risk counters at start of each new trading day ─
+            # -- 0. Reset daily risk counters at start of each new trading day -
             candle_date = candle.datetime.date()
             if candle_date != _last_date:
                 risk.reset_daily()
                 _last_date = candle_date
 
-            # ── 1. Fill pending entry signal at this candle's OPEN ──────────
+            # -- 1. Fill pending entry signal at this candle's OPEN ----------
             if _pending is not None and _pos is None:
                 direction = "LONG" if _pending.direction == SignalDirection.LONG else "SHORT"
                 slip      = self._slippage if direction == "LONG" else -self._slippage
@@ -662,16 +661,16 @@ class BacktestEngine:
                         )
                         strategy.on_trade_entry(_pending, fill)
                         logger.debug(
-                            "[BT] ENTRY {} @ ₹{:.2f} | SL ₹{:.2f} | T ₹{:.2f} | qty {}",
+                            "[BT] ENTRY {} @ Rs.{:.2f} | SL Rs.{:.2f} | T Rs.{:.2f} | qty {}",
                             direction, fill, sl, target, qty,
                         )
                 _pending = None
 
-            # ── 2. Feed candle to strategy ──────────────────────────────────
+            # -- 2. Feed candle to strategy ----------------------------------
             strategy.on_candle(candle)
             atr = getattr(strategy, "_atr", 0.0)
 
-            # ── 3. Intra-candle SL / target check ──────────────────────────
+            # -- 3. Intra-candle SL / target check --------------------------
             if _pos is not None:
                 reason, ep = self._check_intra_candle(candle, _pos)
 
@@ -687,7 +686,7 @@ class BacktestEngine:
                                 _pos.partial_booked  = True
                                 _pos.active_quantity = rm_pos.active_quantity
                                 logger.debug(
-                                    "[BT] PARTIAL @ ₹{:.2f} P&L ₹{:.2f}", pb, ppnl
+                                    "[BT] PARTIAL @ Rs.{:.2f} P&L Rs.{:.2f}", pb, ppnl
                                 )
 
                 if reason is not None:
@@ -705,10 +704,10 @@ class BacktestEngine:
                         _pos.current_sl     = rm_pos.current_sl
                         _pos.trail_activated = rm_pos.trail_activated
 
-            # ── 4. Generate strategy signal ─────────────────────────────────
+            # -- 4. Generate strategy signal ---------------------------------
             signal = strategy.generate_signal()
 
-            # ── 5. FLAT signal → exit at close ──────────────────────────────
+            # -- 5. FLAT signal -> exit at close ------------------------------
             if signal.direction == SignalDirection.FLAT and _pos is not None and not exited_this:
                 slip   = self._slippage if _pos.direction == "LONG" else -self._slippage
                 ep     = round(candle.close * (1 - slip), 2)
@@ -719,7 +718,7 @@ class BacktestEngine:
                 strategy.on_trade_exit(reason, ep)
                 _pos = None
 
-            # ── 6. Entry signal → buffer (next-open) or fill immediately ────
+            # -- 6. Entry signal -> buffer (next-open) or fill immediately ----
             elif (
                 signal.direction in (SignalDirection.LONG, SignalDirection.SHORT)
                 and _pos is None
@@ -759,7 +758,7 @@ class BacktestEngine:
                             )
                             strategy.on_trade_entry(signal, fill)
 
-            # ── 7. Per-candle equity update (realized + unrealized) ──────────
+            # -- 7. Per-candle equity update (realized + unrealized) ----------
             unrealized = 0.0
             if _pos is not None:
                 mult       = 1.0 if _pos.direction == "LONG" else -1.0
@@ -773,7 +772,7 @@ class BacktestEngine:
                 "drawdown": round(max(0.0, peak_equity - current_eq), 2),
             })
 
-        # ── Force-close any open position at last candle ─────────────────────
+        # -- Force-close any open position at last candle ---------------------
         if _pos is not None and candles:
             last  = candles[-1]
             trade = self._close_pos(
@@ -783,7 +782,7 @@ class BacktestEngine:
             completed.append(trade)
 
         logger.info(
-            "Backtest done | {} trades | Net P&L ₹{:.2f}",
+            "Backtest done | {} trades | Net P&L Rs.{:.2f}",
             len(completed), realised_pnl,
         )
 
@@ -799,7 +798,7 @@ class BacktestEngine:
             equity_curve=equity_curve,
         )
 
-    # ── Simulation helpers ─────────────────────────────────────────────
+    # -- Simulation helpers ---------------------------------------------
 
     def _check_intra_candle(
         self, candle: Candle, pos: "_ActivePos"
@@ -856,7 +855,7 @@ class BacktestEngine:
         risk.close_position(self._symbol, exit_price, reason=reason.value)
 
         logger.debug(
-            "[BT] EXIT {} @ ₹{:.2f} P&L ₹{:.2f} {}R | {}",
+            "[BT] EXIT {} @ Rs.{:.2f} P&L Rs.{:.2f} {}R | {}",
             pos.direction, exit_price, total_pnl, r_mult, reason.value,
         )
 
@@ -880,9 +879,9 @@ class BacktestEngine:
         )
 
 
-# ═════════════════════════════════════════════════════════════════════════════
+# =============================================================================
 # Internal active-position state
-# ═════════════════════════════════════════════════════════════════════════════
+# =============================================================================
 
 @dataclass
 class _ActivePos:
@@ -899,9 +898,9 @@ class _ActivePos:
     trail_activated: bool = False
 
 
-# ═════════════════════════════════════════════════════════════════════════════
+# =============================================================================
 # Sample data generator (offline testing without a broker)
-# ═════════════════════════════════════════════════════════════════════════════
+# =============================================================================
 
 def generate_sample_data(
     n_days: int = 90,
@@ -923,7 +922,7 @@ def generate_sample_data(
     """
     random.seed(seed)
 
-    candles_per_day   = 375 // interval_minutes   # NSE session = 9:15–15:30 = 375 min
+    candles_per_day   = 375 // interval_minutes   # NSE session = 9:15-15:30 = 375 min
     total_candles     = n_days * candles_per_day
     candle_vol        = daily_volatility / math.sqrt(candles_per_day)
     candle_drift      = daily_drift / candles_per_day
@@ -967,6 +966,6 @@ def generate_sample_data(
 
     if output_csv:
         df.to_csv(output_csv)
-        logger.info("Sample data saved → {} ({} rows)", output_csv, len(df))
+        logger.info("Sample data saved -> {} ({} rows)", output_csv, len(df))
 
     return df

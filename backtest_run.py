@@ -1,5 +1,5 @@
 """
-backtest_run.py — Command-line entry point for running backtests.
+backtest_run.py - Command-line entry point for running backtests.
 
 Usage examples
 --------------
@@ -46,11 +46,11 @@ console = Console()
               help="Candle interval (minutes)")
 @click.option("--from",  "from_date", default=None, help="Start date YYYY-MM-DD (broker mode)")
 @click.option("--to",    "to_date",   default=None, help="End date YYYY-MM-DD (broker mode)")
-@click.option("--csv",   default=None, help="Path to CSV file (offline mode — no broker needed)")
+@click.option("--csv",   default=None, help="Path to CSV file (offline mode - no broker needed)")
 @click.option("--export", default=None, help="Export trade log to this CSV path")
 @click.option("--equity-csv", default=None, help="Export equity curve to this CSV path")
 @click.option("--commission", default=40.0, show_default=True, type=float,
-              help="Round-trip commission per trade in ₹")
+              help="Round-trip commission per trade in Rs.")
 @click.option("--slippage", default=0.05, show_default=True, type=float,
               help="One-way slippage in %% (e.g. 0.05 = 0.05%%)")
 @click.option("--chart", default=None, metavar="DIR",
@@ -85,12 +85,12 @@ def main(
 ) -> None:
     """Run a backtest, optimization, or data generation for the VWAP+Volume strategy."""
 
-    # Configure logging — suppress chatty output during backtest
+    # Configure logging - suppress chatty output during backtest
     logger.remove()
     logger.add(sys.stderr, level="WARNING",
                format="<green>{time:HH:mm:ss}</green> | <level>{level:<8}</level> | {message}")
 
-    # ── Generate sample data and exit ─────────────────────────────────────────
+    # -- Generate sample data and exit -----------------------------------------
     if generate_sample:
         from backtest.engine import generate_sample_data
         console.print(f"[cyan]Generating {days}-day synthetic NIFTY data...[/cyan]")
@@ -100,7 +100,7 @@ def main(
             output_csv=generate_sample,
         )
         console.print(
-            f"[green]Sample data saved → {generate_sample}[/green] "
+            f"[green]Sample data saved -> {generate_sample}[/green] "
             f"([white]{len(df):,} candles[/white])"
         )
         return
@@ -108,7 +108,7 @@ def main(
     from config import settings
     from backtest.engine import BacktestEngine
 
-    # ── --broker shorthand: auto-compute from/to from --days ─────────────────
+    # -- --broker shorthand: auto-compute from/to from --days -----------------
     if broker and not from_date and not to_date:
         from datetime import timedelta
         td = date.today()
@@ -116,10 +116,10 @@ def main(
         from_date = fd.strftime("%Y-%m-%d")
         to_date   = td.strftime("%Y-%m-%d")
 
-    # ── Load data ─────────────────────────────────────────────────────────────
+    # -- Load data -------------------------------------------------------------
     df = _load_data(symbol, csv, from_date, to_date, interval, settings)
 
-    # ── Optimization mode ─────────────────────────────────────────────────────
+    # -- Optimization mode -----------------------------------------------------
     if optimize:
         from backtest.optimizer import run_grid_optimization, print_optimization_report, DEFAULT_PARAM_GRID
 
@@ -130,7 +130,7 @@ def main(
         total_combos = 1
         for v in DEFAULT_PARAM_GRID.values():
             total_combos *= len(v)
-        console.print(f"[dim]Total combinations: {total_combos} → showing top {top_n}[/dim]\n")
+        console.print(f"[dim]Total combinations: {total_combos} -> showing top {top_n}[/dim]\n")
 
         results = run_grid_optimization(
             symbol=symbol,
@@ -147,7 +147,22 @@ def main(
         print_optimization_report(results)
         return
 
-    # ── Standard backtest ─────────────────────────────────────────────────────
+    # -- Detect market regime (uses broker if available, else skips) -----------
+    detected_regime = "UNKNOWN"
+    if from_date and to_date and not csv:
+        try:
+            from brokers import get_broker as _get_broker
+            from strategies.regime_detector import RegimeDetector
+            _rb = _get_broker(settings)
+            _rb.connect()
+            _det = RegimeDetector(_rb, settings)
+            detected_regime = _det.detect(symbol).value
+            _rb.disconnect()
+            console.print(f"[cyan]Market regime detected: [bold]{detected_regime}[/bold][/cyan]")
+        except Exception as _e:
+            console.print(f"[yellow]Regime detection skipped: {_e}[/yellow]")
+
+    # -- Standard backtest -----------------------------------------------------
     engine = BacktestEngine(
         strategy_name=strategy,
         symbol=symbol,
@@ -159,26 +174,68 @@ def main(
 
     result.print_summary()
 
+    # -- Log result to parameter registry -------------------------------------
+    try:
+        from data.parameter_registry import ParameterRegistry
+        from strategies.vwap_volume import VWAPVolumeConfig
+        _cfg = VWAPVolumeConfig()
+        _params = {
+            "volume_surge_multiplier": _cfg.volume_surge_multiplier,
+            "volume_ma_period":        _cfg.volume_ma_period,
+            "rsi_long_min":            _cfg.rsi_long_min,
+            "rsi_long_max":            _cfg.rsi_long_max,
+            "rsi_short_min":           _cfg.rsi_short_min,
+            "rsi_short_max":           _cfg.rsi_short_max,
+            "ema_period":              _cfg.ema_period,
+            "ema_trend_period":        _cfg.ema_trend_period,
+            "sl_atr_multiplier":       _cfg.sl_atr_multiplier,
+            "rr_ratio":                _cfg.rr_ratio,
+            "vwap_exit_candles":       _cfg.vwap_exit_candles,
+            "interval_minutes":        interval,
+        }
+        _reg = ParameterRegistry()
+        _reg.log_run(
+            symbol=symbol,
+            regime=detected_regime,
+            interval_minutes=interval,
+            params=_params,
+            result={
+                "total_trades":     result.total_trades,
+                "win_rate_pct":     result.win_rate_pct,
+                "net_pnl":          result.net_pnl,
+                "profit_factor":    result.profit_factor,
+                "sharpe_ratio":     result.sharpe_ratio,
+                "max_drawdown_pct": result.max_drawdown_pct,
+                "cagr_pct":         result.cagr_pct,
+            },
+            source="backtest",
+            period_from=from_date,
+            period_to=to_date,
+        )
+        console.print("[dim]Result saved to parameter registry.[/dim]")
+    except Exception as _e:
+        console.print(f"[yellow]Registry log skipped: {_e}[/yellow]")
+
     if export:
         result.to_csv(export)
-        console.print(f"[green]Trade log saved → {export}[/green]")
+        console.print(f"[green]Trade log saved -> {export}[/green]")
 
     if equity_csv:
         result.to_equity_csv(equity_csv)
-        console.print(f"[green]Equity curve saved → {equity_csv}[/green]")
+        console.print(f"[green]Equity curve saved -> {equity_csv}[/green]")
 
     if chart:
         path = result.plot_charts(chart)
         if path:
-            console.print(f"[green]Chart saved → {path}[/green]")
+            console.print(f"[green]Chart saved -> {path}[/green]")
         else:
             console.print(
-                "[yellow]Chart skipped — install matplotlib:[/yellow] "
+                "[yellow]Chart skipped - install matplotlib:[/yellow] "
                 "[dim]pip install matplotlib[/dim]"
             )
 
 
-# ── Data loading helper ────────────────────────────────────────────────────────
+# -- Data loading helper --------------------------------------------------------
 
 def _load_data(symbol, csv, from_date, to_date, interval, settings):
     """Load DataFrame from CSV or broker. Exits on error."""
@@ -206,7 +263,14 @@ def _load_data(symbol, csv, from_date, to_date, interval, settings):
             console.print("[red]Date format must be YYYY-MM-DD[/red]")
             sys.exit(1)
 
-        console.print(f"[cyan]Connecting to broker to fetch {symbol} data...[/cyan]")
+        total_days = (td - fd).days
+        n_chunks = max(1, (total_days + 59) // 60)
+        console.print(
+            f"[cyan]Connecting to broker to fetch {symbol} data "
+            f"({from_date} to {to_date}, ~{total_days} days"
+            + (f", {n_chunks} chunks" if n_chunks > 1 else "")
+            + ")...[/cyan]"
+        )
         from brokers import get_broker
         broker = get_broker(settings)
         try:
@@ -228,8 +292,13 @@ def _load_data(symbol, csv, from_date, to_date, interval, settings):
         )
         broker.disconnect()
         if df.empty:
-            console.print(f"[red]No data returned for {symbol} {from_date} → {to_date}[/red]")
+            console.print(f"[red]No data returned for {symbol} {from_date} to {to_date}[/red]")
+            console.print(
+                "[yellow]This usually means the access token expired or the symbol is wrong.\n"
+                "Run: python generate_token.py   to refresh your token.[/yellow]"
+            )
             sys.exit(1)
+        console.print(f"[green]Fetched {len(df):,} candles ({from_date} to {to_date})[/green]")
         return df
 
     else:

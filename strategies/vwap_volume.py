@@ -1,9 +1,9 @@
 """
-strategies/vwap_volume.py — VWAP + Volume crossover strategy.
+strategies/vwap_volume.py - VWAP + Volume crossover strategy.
 
 Entry logic:
-  LONG  → price crosses above VWAP + volume surge + RSI 45–65 + above 9 EMA
-  SHORT → price crosses below VWAP + volume surge + RSI 35–55 + below 9 EMA
+  LONG  -> price crosses above VWAP + volume surge + RSI 45-65 + above 9 EMA
+  SHORT -> price crosses below VWAP + volume surge + RSI 35-55 + below 9 EMA
 
 Exit logic:
   - Price crosses opposite side of VWAP
@@ -37,32 +37,37 @@ from strategies.indicators import (
 )
 
 
-# ── Strategy Parameters ───────────────────────────────────────────────────────
+# -- Strategy Parameters -------------------------------------------------------
 
 @dataclass
 class VWAPVolumeConfig:
-    """All tunable parameters — change here without touching logic."""
+    """All tunable parameters - change here without touching logic."""
 
     # Volume
     volume_ma_period: int = 20          # SMA period for average volume
-    volume_surge_multiplier: float = 2.0  # Volume must be N× the average
+    volume_surge_multiplier: float = 2.5  # Volume must be N* the average (tightened from 2.0)
 
-    # RSI
+    # RSI — tighter range keeps only high-momentum entries
     rsi_period: int = 14
-    rsi_long_min: int = 45              # LONG: RSI must be above this
+    rsi_long_min: int = 50              # LONG: RSI must be above this (was 45)
     rsi_long_max: int = 65              # LONG: RSI must be below this
     rsi_short_min: int = 35             # SHORT: RSI range
-    rsi_short_max: int = 55
+    rsi_short_max: int = 50             # SHORT: must be below 50 (was 55)
     rsi_overbought: int = 75            # Exit long if RSI > this
     rsi_oversold: int = 25              # Exit short if RSI < this
 
-    # EMA
+    # EMA — short-term momentum + trend confirmation
     ema_period: int = 9
+    ema_trend_period: int = 21          # Trend EMA: only trade LONG when close > EMA21
 
     # ATR (for stop loss)
     atr_period: int = 14
-    sl_atr_multiplier: float = 1.5      # Stop loss = N × ATR
+    sl_atr_multiplier: float = 1.5      # Stop loss = N * ATR
     rr_ratio: float = 2.0              # Reward:Risk ratio for target
+
+    # VWAP exit patience: only exit on VWAP cross if price stays on wrong side N candles
+    # Avoids being shaken out by brief wicks back through VWAP
+    vwap_exit_candles: int = 2
 
     # Partial booking
     partial_exit_rr: float = 1.0        # Book 50% when RR hits 1:1
@@ -73,7 +78,7 @@ class VWAPVolumeConfig:
     warmup_candles: int = 50            # Candles needed before trading
 
 
-# ── Strategy ──────────────────────────────────────────────────────────────────
+# -- Strategy ------------------------------------------------------------------
 
 class VWAPVolumeStrategy(BaseStrategy):
     """
@@ -91,24 +96,27 @@ class VWAPVolumeStrategy(BaseStrategy):
         self._vwap: float = 0.0
         self._rsi: float = 50.0
         self._ema9: float = 0.0
+        self._ema21: float = 0.0            # Trend filter
         self._atr: float = 0.0
         self._volume_ma: float = 0.0
         self._prev_close_vs_vwap: int = 0   # +1 above, -1 below, 0 init
+        self._candles_below_vwap: int = 0   # patience counter for VWAP exit (LONG)
+        self._candles_above_vwap: int = 0   # patience counter for VWAP exit (SHORT)
         self._partial_booked: bool = False  # True once 1:1 RR partial exit fires
         self._last_tick_price: float = 0.0  # Updated on every tick
         self._tick_sl_breach: bool = False  # SL crossed intra-candle on a tick
 
         # Backtest fast-path: pre-computed indicators keyed by candle datetime.
         # Populated by precompute_indicators(); on_candle() uses it to skip
-        # recomputing indicators on every bar (O(n²) → O(n) per backtest).
+        # recomputing indicators on every bar (O(n²) -> O(n) per backtest).
         self._precomputed: dict = {}
 
-    # ── Candle processing ─────────────────────────────────────────────
+    # -- Candle processing ---------------------------------------------
 
     def add_candle(self, candle: Candle) -> None:
         """
         Override base: when pre-computed indicators are loaded (backtest),
-        just append to history without rebuilding the whole DataFrame —
+        just append to history without rebuilding the whole DataFrame -
         the fast path in on_candle() does not read self._df at all.
         This eliminates the O(n²) rebuild cost over long backtests.
         """
@@ -121,17 +129,18 @@ class VWAPVolumeStrategy(BaseStrategy):
         """
         Backtest fast-path: compute every indicator once on the full DataFrame
         and cache the per-bar results keyed by candle datetime. Called by the
-        backtest engine before the candle loop — on_candle() then just reads
+        backtest engine before the candle loop - on_candle() then just reads
         the cached row instead of recomputing all five indicators each bar.
         """
         df = full_df.copy()
         df["vwap"], _, _ = _vwap_calc(df)
         df["ema9"]   = _ema(df["close"], self.cfg.ema_period)
+        df["ema21"]  = _ema(df["close"], self.cfg.ema_trend_period)
         df["rsi"]    = _rsi(df["close"], self.cfg.rsi_period)
         df["atr"]    = _atr(df, self.cfg.atr_period)
         df["vol_ma"] = _sma(df["volume"], self.cfg.volume_ma_period)
 
-        cols = ["vwap", "ema9", "rsi", "atr", "vol_ma"]
+        cols = ["vwap", "ema9", "ema21", "rsi", "atr", "vol_ma"]
         self._precomputed = {
             ts.to_pydatetime() if hasattr(ts, "to_pydatetime") else ts:
                 tuple(row[c] for c in cols)
@@ -148,40 +157,42 @@ class VWAPVolumeStrategy(BaseStrategy):
         if not self.is_warmed_up():
             return
 
-        # ── Fast path (backtest): read pre-computed values ────────────────
+        # -- Fast path (backtest): read pre-computed values ----------------
         cached = self._precomputed.get(candle.datetime)
         if cached is not None:
-            v, e, r, a, vm = cached
-            if not math.isnan(v):  self._vwap      = v
-            if not math.isnan(e):  self._ema9      = e
-            if not math.isnan(r):  self._rsi       = r
-            if not math.isnan(a):  self._atr       = a
-            if not math.isnan(vm): self._volume_ma = vm
+            v, e, e21, r, a, vm = cached
+            if not math.isnan(v):   self._vwap      = v
+            if not math.isnan(e):   self._ema9      = e
+            if not math.isnan(e21): self._ema21     = e21
+            if not math.isnan(r):   self._rsi       = r
+            if not math.isnan(a):   self._atr       = a
+            if not math.isnan(vm):  self._volume_ma = vm
         else:
-            # ── Live path: recompute on the recent slice ──────────────────
-            # Cap to last 200 candles — sufficient for all indicators (VWAP ≤75 bars/day,
-            # RSI/ATR/EMA/SMA all ≤50) and avoids O(n²) growth.
+            # -- Live path: recompute on the recent slice ------------------
             df = self._df.iloc[-200:].copy()
             df["vwap"], _, _ = _vwap_calc(df)
             df["ema9"]   = _ema(df["close"], self.cfg.ema_period)
+            df["ema21"]  = _ema(df["close"], self.cfg.ema_trend_period)
             df["rsi"]    = _rsi(df["close"], self.cfg.rsi_period)
             df["atr"]    = _atr(df, self.cfg.atr_period)
             df["vol_ma"] = _sma(df["volume"], self.cfg.volume_ma_period)
             last = df.iloc[-1]
             if not math.isnan(last["vwap"]):   self._vwap      = last["vwap"]
             if not math.isnan(last["ema9"]):   self._ema9      = last["ema9"]
+            if not math.isnan(last["ema21"]):  self._ema21     = last["ema21"]
             if not math.isnan(last["rsi"]):    self._rsi       = last["rsi"]
             if not math.isnan(last["atr"]):    self._atr       = last["atr"]
             if not math.isnan(last["vol_ma"]): self._volume_ma = last["vol_ma"]
 
         # Store indicator values in state for dashboard display
         self.state.indicators = {
-            "vwap": round(self._vwap, 2),
-            "ema9": round(self._ema9, 2),
-            "rsi": round(self._rsi, 1),
-            "atr": round(self._atr, 2),
-            "volume_ma": round(self._volume_ma, 0),
-            "volume": candle.volume,
+            "vwap":         round(self._vwap, 2),
+            "ema9":         round(self._ema9, 2),
+            "ema21":        round(self._ema21, 2),
+            "rsi":          round(self._rsi, 1),
+            "atr":          round(self._atr, 2),
+            "volume_ma":    round(self._volume_ma, 0),
+            "volume":       candle.volume,
             "volume_ratio": round(candle.volume / self._volume_ma, 2) if self._volume_ma else 0,
         }
 
@@ -210,7 +221,7 @@ class VWAPVolumeStrategy(BaseStrategy):
                 self._tick_sl_breach = True
                 logger.warning("Tick SL breach detected @ {} (SL {})", ltp, sl)
 
-    # ── Signal generation ─────────────────────────────────────────────
+    # -- Signal generation ---------------------------------------------
 
     def _indicators_ready(self) -> bool:
         """Return True only when every indicator holds a valid, non-zero value."""
@@ -218,6 +229,7 @@ class VWAPVolumeStrategy(BaseStrategy):
             self._vwap > 0
             and self._atr > 0
             and self._volume_ma > 0
+            and self._ema21 > 0
             and not math.isnan(self._rsi)
             and not math.isnan(self._ema9)
         )
@@ -274,12 +286,18 @@ class VWAPVolumeStrategy(BaseStrategy):
         crossed_below = (prev_dir >= 0) and (curr_dir == -1)
         self._prev_close_vs_vwap = curr_dir
 
-        # ── LONG conditions ──────────────────────────────────────────
+        # -- LONG conditions ------------------------------------------
+        # EMA21 trend filter: only take longs when price is above the 21-period trend EMA.
+        # This prevents buying into a downtrend just because price crossed VWAP.
+        trend_bullish = price > self._ema21
+        trend_bearish = price < self._ema21
+
         if (
             crossed_above
             and vol_surge
             and self.cfg.rsi_long_min <= self._rsi <= self.cfg.rsi_long_max
             and price > self._ema9
+            and trend_bullish
         ):
             sl = price - (self.cfg.sl_atr_multiplier * self._atr)
             risk = price - sl
@@ -306,12 +324,13 @@ class VWAPVolumeStrategy(BaseStrategy):
                 ),
             )
 
-        # ── SHORT conditions ─────────────────────────────────────────
+        # -- SHORT conditions -----------------------------------------
         if (
             crossed_below
             and vol_surge
             and self.cfg.rsi_short_min <= self._rsi <= self.cfg.rsi_short_max
             and price < self._ema9
+            and trend_bearish
         ):
             sl = price + (self.cfg.sl_atr_multiplier * self._atr)
             risk = sl - price
@@ -346,7 +365,7 @@ class VWAPVolumeStrategy(BaseStrategy):
         entry = self.state.entry_price
         risk = abs(entry - self.state.current_sl)
 
-        # ── Partial exit at 1:1 RR — move SL to breakeven ────────────────────
+        # -- Partial exit at 1:1 RR - move SL to breakeven --------------------
         # Actual quantity reduction (book 50%) is handled by OrderManager in
         # Phase 7. Here we track the event and update the SL.
         if not self._partial_booked and risk > 0:
@@ -363,41 +382,56 @@ class VWAPVolumeStrategy(BaseStrategy):
                 self._partial_booked = True
                 self.state.current_sl = entry  # move SL to breakeven
                 logger.info(
-                    "1:1 RR reached @ {} — SL moved to breakeven {}",
+                    "1:1 RR reached @ {} - SL moved to breakeven {}",
                     price, entry,
                 )
 
         if direction == SignalDirection.LONG:
-            # Target hit — full exit
+            # Target hit - full exit
             if self.state.current_target > 0 and price >= self.state.current_target:
+                self._candles_below_vwap = 0
                 return self._exit_signal(ExitReason.TARGET_HIT, price)
             # SL hit
             if price <= self.state.current_sl:
+                self._candles_below_vwap = 0
                 return self._exit_signal(ExitReason.STOP_LOSS_HIT, price)
-            # VWAP cross back below → exit
+            # VWAP patience exit: require N consecutive candles below VWAP before exiting.
+            # Avoids being shaken out by a single wick back through VWAP.
             if price < self._vwap:
-                return self._exit_signal(ExitReason.SIGNAL_REVERSAL, price)
-            # RSI overbought → exit
+                self._candles_below_vwap += 1
+                if self._candles_below_vwap >= self.cfg.vwap_exit_candles:
+                    self._candles_below_vwap = 0
+                    return self._exit_signal(ExitReason.SIGNAL_REVERSAL, price)
+            else:
+                self._candles_below_vwap = 0
+            # RSI overbought -> exit
             if self._rsi > self.cfg.rsi_overbought:
                 return self._exit_signal(ExitReason.SIGNAL_REVERSAL, price)
 
         elif direction == SignalDirection.SHORT:
-            # Target hit — full exit
+            # Target hit - full exit
             if self.state.current_target > 0 and price <= self.state.current_target:
+                self._candles_above_vwap = 0
                 return self._exit_signal(ExitReason.TARGET_HIT, price)
             # SL hit
             if price >= self.state.current_sl:
+                self._candles_above_vwap = 0
                 return self._exit_signal(ExitReason.STOP_LOSS_HIT, price)
-            # VWAP cross back above → exit
+            # VWAP patience exit
             if price > self._vwap:
-                return self._exit_signal(ExitReason.SIGNAL_REVERSAL, price)
-            # RSI oversold → exit
+                self._candles_above_vwap += 1
+                if self._candles_above_vwap >= self.cfg.vwap_exit_candles:
+                    self._candles_above_vwap = 0
+                    return self._exit_signal(ExitReason.SIGNAL_REVERSAL, price)
+            else:
+                self._candles_above_vwap = 0
+            # RSI oversold -> exit
             if self._rsi < self.cfg.rsi_oversold:
                 return self._exit_signal(ExitReason.SIGNAL_REVERSAL, price)
 
         return None
 
-    # ── Lifecycle callbacks ───────────────────────────────────────────
+    # -- Lifecycle callbacks -------------------------------------------
 
     def on_trade_entry(self, signal: Signal, filled_price: float) -> None:
         self.state.in_trade = True
@@ -409,6 +443,8 @@ class VWAPVolumeStrategy(BaseStrategy):
         self.state.last_signal = signal
         self._partial_booked = False
         self._tick_sl_breach = False
+        self._candles_below_vwap = 0
+        self._candles_above_vwap = 0
         logger.info(
             "Trade entered | {} {} @ {} | SL: {} | Target: {}",
             signal.direction.value, self.symbol,
@@ -426,12 +462,16 @@ class VWAPVolumeStrategy(BaseStrategy):
         )
         self._partial_booked = False
         self._tick_sl_breach = False
+        self._candles_below_vwap = 0
+        self._candles_above_vwap = 0
         self.reset_state()
 
     def on_market_open(self) -> None:
-        """Reset daily state at 9:15 AM."""
+        """Reset daily state at market open."""
         self._prev_close_vs_vwap = 0
         self._tick_sl_breach = False
+        self._candles_below_vwap = 0
+        self._candles_above_vwap = 0
         logger.info("{} strategy reset for new trading day", self.name)
 
     def which_strike(
@@ -451,15 +491,15 @@ class VWAPVolumeStrategy(BaseStrategy):
         dict with keys: strike_price (float), option_type ("CE" or "PE")
 
         Example (Nifty @ 22_345, interval=50):
-            LONG  → {"strike_price": 22350.0, "option_type": "CE"}
-            SHORT → {"strike_price": 22350.0, "option_type": "PE"}
+            LONG  -> {"strike_price": 22350.0, "option_type": "CE"}
+            SHORT -> {"strike_price": 22350.0, "option_type": "PE"}
         """
         interval = self.cfg.strike_interval
         atm = round(current_price / interval) * interval
         option_type = "CE" if direction == SignalDirection.LONG else "PE"
         return {"strike_price": float(atm), "option_type": option_type}
 
-    # ── Private helpers ───────────────────────────────────────────────
+    # -- Private helpers -----------------------------------------------
 
     def _flat_signal(self, reason: str) -> Signal:
         return Signal(
@@ -486,7 +526,7 @@ class VWAPVolumeStrategy(BaseStrategy):
         rsi_in_range: bool,
         ema_aligned: bool,
     ) -> int:
-        """Score 0–100 based on how many conditions are strongly met."""
+        """Score 0-100 based on how many conditions are strongly met."""
         score = 0
         if crossed:
             score += 30

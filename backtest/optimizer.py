@@ -1,5 +1,5 @@
 """
-backtest/optimizer.py — Parameter grid-search optimizer for backtesting.
+backtest/optimizer.py - Parameter grid-search optimizer for backtesting.
 
 Iterates over combinations of strategy parameters, runs a full backtest for
 each combination, ranks by Sharpe ratio (with Rf), and flags overfitting.
@@ -34,7 +34,7 @@ from loguru import logger
 from backtest.engine import BacktestEngine, BacktestResult
 
 
-# ── Default parameter grid ─────────────────────────────────────────────────────
+# -- Default parameter grid -----------------------------------------------------
 # Chosen to cover realistic VWAPVolume strategy parameter ranges.
 # Total combos with defaults: 3 × 3 × 3 × 3 × 3 = 243 (fast enough in pure Python)
 
@@ -52,9 +52,9 @@ _MAX_WIN_RATE_THRESHOLD = 75.0   # win rate above this looks too good
 _MAX_MONTHLY_CV         = 1.5    # coefficient of variation: high = inconsistent months
 
 
-# ═════════════════════════════════════════════════════════════════════════════
+# =============================================================================
 # Data structures
-# ═════════════════════════════════════════════════════════════════════════════
+# =============================================================================
 
 @dataclass
 class OverfitWarning:
@@ -96,9 +96,9 @@ class OptimizeResult:
         return len(self.overfit_warnings) > 0
 
 
-# ═════════════════════════════════════════════════════════════════════════════
+# =============================================================================
 # Overfitting detection
-# ═════════════════════════════════════════════════════════════════════════════
+# =============================================================================
 
 def detect_overfitting(result: BacktestResult) -> list[OverfitWarning]:
     """
@@ -106,11 +106,11 @@ def detect_overfitting(result: BacktestResult) -> list[OverfitWarning]:
 
     Criteria
     --------
-    1. Too few trades  : < 30 trades → statistically unreliable
-    2. Win rate too high : > 75% → strategy may be curve-fitted to data
-    3. Inconsistent monthly P&L : CV > 1.5 → performance not stable
-    4. Suspiciously high profit factor : > 5.0 → overfitted to favorable periods
-    5. Zero losing months in multi-month test : → no stress test coverage
+    1. Too few trades  : < 30 trades -> statistically unreliable
+    2. Win rate too high : > 75% -> strategy may be curve-fitted to data
+    3. Inconsistent monthly P&L : CV > 1.5 -> performance not stable
+    4. Suspiciously high profit factor : > 5.0 -> overfitted to favorable periods
+    5. Zero losing months in multi-month test : -> no stress test coverage
     """
     warnings: list[OverfitWarning] = []
 
@@ -118,14 +118,14 @@ def detect_overfitting(result: BacktestResult) -> list[OverfitWarning]:
     if 0 < result.total_trades < _MIN_TRADES_THRESHOLD:
         warnings.append(OverfitWarning(
             code="FEW_TRADES",
-            message=f"Only {result.total_trades} trades — need ≥{_MIN_TRADES_THRESHOLD} for reliable stats",
+            message=f"Only {result.total_trades} trades - need >={_MIN_TRADES_THRESHOLD} for reliable stats",
         ))
 
     # 2. Win rate too high
     if result.total_trades >= 10 and result.win_rate_pct > _MAX_WIN_RATE_THRESHOLD:
         warnings.append(OverfitWarning(
             code="HIGH_WIN_RATE",
-            message=f"Win rate {result.win_rate_pct}% exceeds {_MAX_WIN_RATE_THRESHOLD}% — potential curve fitting",
+            message=f"Win rate {result.win_rate_pct}% exceeds {_MAX_WIN_RATE_THRESHOLD}% - potential curve fitting",
         ))
 
     # 3. Inconsistent monthly P&L (high coefficient of variation)
@@ -138,14 +138,14 @@ def detect_overfitting(result: BacktestResult) -> list[OverfitWarning]:
             if cv > _MAX_MONTHLY_CV:
                 warnings.append(OverfitWarning(
                     code="INCONSISTENT_MONTHS",
-                    message=f"Monthly P&L CV={cv:.2f} > {_MAX_MONTHLY_CV} — performance not consistent across months",
+                    message=f"Monthly P&L CV={cv:.2f} > {_MAX_MONTHLY_CV} - performance not consistent across months",
                 ))
 
     # 4. Suspiciously high profit factor
     if result.total_trades >= 10 and result.profit_factor > 5.0:
         warnings.append(OverfitWarning(
             code="HIGH_PROFIT_FACTOR",
-            message=f"Profit factor {result.profit_factor} > 5.0 — may not hold on unseen data",
+            message=f"Profit factor {result.profit_factor} > 5.0 - may not hold on unseen data",
         ))
 
     # 5. No losing months in a multi-month test
@@ -154,15 +154,15 @@ def detect_overfitting(result: BacktestResult) -> list[OverfitWarning]:
         if losing_months == 0:
             warnings.append(OverfitWarning(
                 code="NO_LOSING_MONTHS",
-                message="Zero losing months in test window — strategy not stress-tested",
+                message="Zero losing months in test window - strategy not stress-tested",
             ))
 
     return warnings
 
 
-# ═════════════════════════════════════════════════════════════════════════════
+# =============================================================================
 # Core optimizer
-# ═════════════════════════════════════════════════════════════════════════════
+# =============================================================================
 
 def run_grid_optimization(
     symbol: str,
@@ -188,7 +188,7 @@ def run_grid_optimization(
     df               : pre-loaded OHLCV DataFrame with DatetimeIndex
     interval_minutes : candle interval for backtest
     param_grid       : dict of {param_name: [values]}. Defaults to DEFAULT_PARAM_GRID.
-    commission_inr   : round-trip commission per trade (₹)
+    commission_inr   : round-trip commission per trade (Rs.)
     slippage_pct     : one-way slippage fraction
     top_n            : how many top results to return
     show_progress    : print progress dots to console
@@ -263,7 +263,7 @@ def run_grid_optimization(
             if show_progress and (i + 1) % max(1, total // 20) == 0:
                 pct = (i + 1) / total * 100
                 elapsed = time.time() - t0
-                print(f"  {pct:.0f}% ({i+1}/{total}) — {elapsed:.1f}s elapsed", flush=True)
+                print(f"  {pct:.0f}% ({i+1}/{total}) - {elapsed:.1f}s elapsed", flush=True)
 
     elapsed_total = time.time() - t0
     logger.info(
@@ -281,9 +281,9 @@ def run_grid_optimization(
     return all_results[:top_n]
 
 
-# ═════════════════════════════════════════════════════════════════════════════
+# =============================================================================
 # Report
-# ═════════════════════════════════════════════════════════════════════════════
+# =============================================================================
 
 def print_optimization_report(
     results: list[OptimizeResult],
@@ -296,8 +296,8 @@ def print_optimization_report(
         print("\n[Optimizer] No valid results found.")
         return
 
-    sep  = "═" * 72
-    sep2 = "─" * 72
+    sep  = "=" * 72
+    sep2 = "-" * 72
 
     print(f"\n{sep}")
     print(f"  OPTIMIZATION REPORT  (top {len(results)} by Sharpe Ratio with Rf=6.5%)")
@@ -305,7 +305,7 @@ def print_optimization_report(
 
     for opt in results:
         r   = opt.result
-        tag = "  ⚠ OVERFIT" if opt.is_overfit else "  ✓ OK"
+        tag = "  ! OVERFIT" if opt.is_overfit else "  OK OK"
 
         print(f"\n  Rank #{opt.rank}{tag}")
         print(sep2)
@@ -317,7 +317,7 @@ def print_optimization_report(
         print(
             f"  Sharpe(Rf): {r.sharpe_ratio_rf:<7}  "
             f"CAGR: {r.cagr_pct:+.2f}%  "
-            f"Net P&L: ₹{r.net_pnl:+,.0f}"
+            f"Net P&L: Rs.{r.net_pnl:+,.0f}"
         )
         print(
             f"  Trades: {r.total_trades:<6}  "
@@ -328,7 +328,7 @@ def print_optimization_report(
         print(
             f"  Avg R: {r.avg_r_multiple}R  "
             f"Sharpe(raw): {r.sharpe_ratio}  "
-            f"Commission: ₹{r.total_commission:,.0f}"
+            f"Commission: Rs.{r.total_commission:,.0f}"
         )
 
         if opt.overfit_warnings:
@@ -351,7 +351,7 @@ def print_optimization_report(
     elif results[0].is_overfit:
         print(
             "  WARNING: #1 ranked result is flagged for overfitting.\n"
-            "  Use the first clean result (lowest rank without ⚠) for live trading."
+            "  Use the first clean result (lowest rank without !) for live trading."
         )
     print(sep)
 

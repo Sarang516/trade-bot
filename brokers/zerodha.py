@@ -68,6 +68,18 @@ _STATUS_MAP = {
     "TRIGGER PENDING": OrderStatus.OPEN,
 }
 
+# Zerodha instrument name aliases — the CLI uses short names; Kite uses full names.
+# Keys are what the user passes (--symbol), values are Zerodha tradingsymbol strings.
+_SYMBOL_ALIASES: dict[str, str] = {
+    "NIFTY":       "NIFTY 50",
+    "NIFTY50":     "NIFTY 50",
+    "BANKNIFTY":   "NIFTY BANK",
+    "NIFTYBANK":   "NIFTY BANK",
+    "FINNIFTY":    "NIFTY FIN SERVICE",
+    "MIDCPNIFTY":  "NIFTY MIDCAP SELECT",
+    "SENSEX":      "SENSEX",
+}
+
 
 class ZerodhaBroker(BaseBroker):
     """
@@ -392,7 +404,9 @@ class ZerodhaBroker(BaseBroker):
     # ── Instrument Lookup ─────────────────────────────────────────────
 
     def get_instrument_token(self, symbol: str, exchange: Exchange) -> int:
-        cache_key = f"{exchange.value}:{symbol}"
+        # Resolve short aliases (e.g. NIFTY -> NIFTY 50, BANKNIFTY -> NIFTY BANK)
+        resolved = _SYMBOL_ALIASES.get(symbol.upper(), symbol)
+        cache_key = f"{exchange.value}:{resolved}"
         if cache_key in self._instruments_cache:
             return self._instruments_cache[cache_key]
 
@@ -405,7 +419,9 @@ class ZerodhaBroker(BaseBroker):
                 key = f"{exchange.value}:{inst['tradingsymbol']}"
                 self._instruments_cache[key] = inst["instrument_token"]
             if cache_key not in self._instruments_cache:
-                raise BrokerDataError(f"Symbol '{symbol}' not found on {ex}")
+                raise BrokerDataError(
+                    f"Symbol '{symbol}' (resolved: '{resolved}') not found on {ex}"
+                )
             return self._instruments_cache[cache_key]
         except BrokerDataError:
             raise

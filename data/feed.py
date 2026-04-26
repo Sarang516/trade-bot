@@ -335,6 +335,13 @@ class HistoricalData:
     def _connect(self) -> sqlite3.Connection:
         return sqlite3.connect(str(self._db_path))
 
+    # Zerodha Kite Connect hard limits per request (calendar days):
+    #   1-min  : 60 days    3-min  : 60 days   5-min  : 60 days
+    #   15-min : 60 days   30-min  : 60 days   60-min : 60 days
+    #   daily  : 2000 days (not used here — all intraday)
+    # No API limit on total history depth — can fetch many years by chunking.
+    _CHUNK_DAYS = {1: 60, 3: 60, 5: 60, 15: 60, 30: 60, 60: 60}
+
     def fetch(
         self,
         symbol: str,
@@ -346,6 +353,8 @@ class HistoricalData:
         """
         Return OHLCV DataFrame for the requested range.
         Loads from cache where available, fetches missing ranges from broker.
+        Automatically chunks large date ranges to stay within Zerodha's 60-day
+        per-request limit for intraday intervals.
         """
         interval_str = self.KITE_INTERVALS.get(interval_minutes, "5minute")
         cached = self._load_cache(symbol, exchange.value, interval_str,
@@ -355,8 +364,51 @@ class HistoricalData:
                          interval_str, exchange.value, len(cached))
             return cached
 
-        logger.info("Fetching historical data from broker: {} {} {}",
-                    symbol, interval_str, exchange.value)
+        chunk_days = self._CHUNK_DAYS.get(interval_minutes, 60)
+        total_days = (to_date - from_date).days
+
+        if total_days <= chunk_days:
+            return self._fetch_single(symbol, exchange, from_date, to_date,
+                                      interval_str, interval_minutes)
+
+        # Split into chunks and concatenate
+        logger.info(
+            "Date range {} days exceeds {} day limit — fetching in chunks",
+            total_days, chunk_days,
+        )
+        chunks: list[pd.DataFrame] = []
+        chunk_start = from_date
+        while chunk_start < to_date:
+            chunk_end = min(
+                chunk_start + timedelta(days=chunk_days),
+                to_date,
+            )
+            part = self._fetch_single(symbol, exchange, chunk_start, chunk_end,
+                                      interval_str, interval_minutes)
+            if not part.empty:
+                chunks.append(part)
+            chunk_start = chunk_end
+
+        if not chunks:
+            return pd.DataFrame(columns=["open", "high", "low", "close", "volume"])
+
+        df = pd.concat(chunks)
+        df = df[~df.index.duplicated(keep="first")].sort_index()
+        if not df.empty:
+            self._save_cache(df, symbol, exchange.value, interval_str)
+        return df
+
+    def _fetch_single(
+        self,
+        symbol: str,
+        exchange: Exchange,
+        from_date: datetime,
+        to_date: datetime,
+        interval_str: str,
+        interval_minutes: int,
+    ) -> pd.DataFrame:
+        logger.info("Fetching {} {} {} → {}", symbol, interval_str,
+                    from_date.date(), to_date.date())
         try:
             df = self._broker.get_historical_data(
                 symbol=symbol,
@@ -367,9 +419,7 @@ class HistoricalData:
             )
         except Exception as exc:
             logger.error("Historical data fetch failed: {}", exc)
-            return pd.DataFrame(
-                columns=["open", "high", "low", "close", "volume"]
-            )
+            return pd.DataFrame(columns=["open", "high", "low", "close", "volume"])
 
         if not df.empty:
             self._save_cache(df, symbol, exchange.value, interval_str)
