@@ -250,46 +250,59 @@ def main(paper: bool, symbol: str, no_dashboard: bool, log_level: str | None) ->
     broker = get_broker(s)
     strategy = get_strategy(s.strategy, symbol=symbol, settings=s)
 
-    # -- Regime-aware parameter loading (the "agent" decision at startup) ------
-    # Detects today's market regime and loads the best-known parameters for it
-    # from the parameter registry.  On the first run the registry is empty and
-    # defaults are used; after a few backtests it auto-selects the best config.
-    _current_regime = "UNKNOWN"
+    risk_manager = RiskManager(settings=s)
+    trade_logger = TradeLogger()
+
+    # -- Claude AI agent decision at startup ------
+    # The agent analyzes market conditions and recommends parameters + risk settings
+    _agent_decision = None
     try:
-        from strategies.regime_detector import RegimeDetector, describe_regime
-        from data.parameter_registry import ParameterRegistry
-        _det = RegimeDetector(broker, s)
-        # broker not yet connected — connect briefly just for regime fetch
         broker.connect()
-        _current_regime = _det.detect(symbol).value
-        broker.disconnect()
+        from agents.trading_agent import TradingAgent
+        _agent = TradingAgent(broker, s)
+        _agent_decision = _agent.analyze_and_decide(symbol)
 
-        logger.info("Market regime: {} - {}", _current_regime, describe_regime(
-            __import__("strategies.regime_detector", fromlist=["Regime"]).Regime(_current_regime)
-        ))
-        console.print(f"[cyan]Market regime: [bold]{_current_regime}[/bold][/cyan]")
+        logger.info(
+            "Agent decision: regime={} | mode={} | confidence={:.0f}% | pos_mult={:.1f}x | "
+            "should_trade={}",
+            _agent_decision.regime,
+            _agent_decision.trading_mode,
+            _agent_decision.confidence_score,
+            _agent_decision.position_size_multiplier,
+            _agent_decision.should_trade,
+        )
 
-        _reg = ParameterRegistry()
-        _best = _reg.best_params(symbol, _current_regime)
-        if _best and hasattr(strategy, "cfg"):
+        console.print(f"[cyan]Market regime: [bold]{_agent_decision.regime}[/bold] "
+                      f"(confidence {_agent_decision.confidence_score:.0f}%)[/cyan]")
+        console.print(f"[cyan]Trading mode: [bold]{_agent_decision.trading_mode}[/bold][/cyan]")
+
+        # Apply agent's parameter recommendations
+        if _agent_decision.parameters and hasattr(strategy, "cfg"):
             applied = []
-            for k, v in _best.items():
+            for k, v in _agent_decision.parameters.items():
                 if hasattr(strategy.cfg, k):
                     setattr(strategy.cfg, k, type(getattr(strategy.cfg, k))(v))
                     applied.append(f"{k}={v}")
             if applied:
-                logger.info("Auto-loaded regime params for {}/{}: {}", symbol, _current_regime, applied)
-                console.print(f"[green]Regime params applied ({len(applied)} settings)[/green]")
-            else:
-                logger.info("No matching regime params found — using defaults")
-        else:
-            logger.info("No registry entry for {}/{} — using default parameters", symbol, _current_regime)
-            console.print(f"[yellow]No regime params yet for {symbol}/{_current_regime} - run backtests to build history[/yellow]")
-    except Exception as _exc:
-        logger.warning("Regime detection failed (using defaults): {}", _exc)
+                logger.info("Applied agent parameters: {}", applied)
+                console.print(f"[green]Agent parameters applied ({len(applied)} settings)[/green]")
 
-    risk_manager = RiskManager(settings=s)
-    trade_logger = TradeLogger()
+        # Apply agent's risk recommendations
+        if hasattr(strategy, "cfg") and hasattr(strategy.cfg, "trailing_sl_enabled"):
+            strategy.cfg.trailing_sl_enabled = _agent_decision.trailing_sl_enabled
+            logger.info("Trailing SL: {}", "enabled" if _agent_decision.trailing_sl_enabled else "disabled")
+
+        if hasattr(strategy, "cfg") and hasattr(strategy.cfg, "max_open_positions"):
+            strategy.cfg.max_open_positions = _agent_decision.max_open_positions
+            logger.info("Max open positions: {}", _agent_decision.max_open_positions)
+
+        logger.info("Agent reasoning: {}", _agent_decision.reasoning)
+        console.print(f"[blue]{_agent_decision.reasoning}[/blue]")
+
+    except Exception as _exc:
+        logger.warning("Agent analysis failed (using defaults): {}", _exc)
+        console.print(f"[yellow]Agent failed, falling back to defaults[/yellow]")
+
     order_manager = OrderManager(
         broker=broker,
         risk_manager=risk_manager,
@@ -328,13 +341,15 @@ def main(paper: bool, symbol: str, no_dashboard: bool, log_level: str | None) ->
         logger.info("Telegram disabled - set TELEGRAM_BOT_TOKEN in .env to enable")
 
     # -- Connect broker ------------------------------------------------
-    logger.info("Connecting to {} broker...", s.broker)
-    try:
-        broker.connect()
-    except Exception as exc:
-        logger.critical("Broker connection failed: {}", exc)
-        console.print(f"[red]Broker connection failed: {exc}[/red]")
-        sys.exit(1)
+    # (already connected during agent analysis, but ensure it's connected)
+    if not broker.is_connected():
+        logger.info("Connecting to {} broker...", s.broker)
+        try:
+            broker.connect()
+        except Exception as exc:
+            logger.critical("Broker connection failed: {}", exc)
+            console.print(f"[red]Broker connection failed: {exc}[/red]")
+            sys.exit(1)
 
     # -- Historical warmup - pre-load candles before live trading ------
     _warmup_strategy(broker, strategy, symbol, s)

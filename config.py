@@ -57,6 +57,12 @@ class Settings(BaseSettings):
     # icici_api_secret: str = Field(default="DUMMY_ICICI_SECRET")
     # icici_session_token: str = Field(default="DUMMY_ICICI_SESSION")
 
+    # ── Anthropic Claude AI Agent ─────────────────────────────────────────────
+    # Set ANTHROPIC_API_KEY in your .env file.
+    # Get your key at: https://console.anthropic.com/
+    # Leave as empty string to disable the agent (bot will use registry defaults).
+    anthropic_api_key: str = Field(default="")
+
     # ── Telegram ──────────────────────────────────────────────────────────────
     # Set TELEGRAM_BOT_TOKEN and TELEGRAM_CHAT_ID in your .env file.
     # Leave as DUMMY values to disable — bot will log alerts to console instead.
